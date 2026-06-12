@@ -2,7 +2,9 @@ package view
 
 import (
 	"context"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,7 +198,7 @@ func TestProfileSelectorConsoleLoginSuccessSwitchesAndEmitsProfileChange(t *test
 		{id: "dev", display: "dev", isSSO: false},
 	}})
 
-	_, cmd := selector.Update(loginResultMsg{profileID: "dev", success: true, isConsoleLogin: true})
+	_, cmd := selector.Update(newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, nil))
 	if cmd == nil {
 		t.Fatal("Expected console login success to emit profile change command")
 	}
@@ -261,5 +263,93 @@ func TestProfileSelectorSSOLoginUsesSDKRunner(t *testing.T) {
 	}
 	if execCmd.result.Message != "SSO session ready" {
 		t.Fatalf("result.Message = %q, want SSO session ready", execCmd.result.Message)
+	}
+}
+
+func TestProfileSelectorSSOLoginTimeoutCancelsRunner(t *testing.T) {
+	selector := NewProfileSelector()
+	selector.SetSize(100, 50)
+
+	cancelled := make(chan struct{})
+	runner := func(ctx context.Context, _ awsui.ProfileInfo, _ io.Writer) (awsui.SSOLoginResult, error) {
+		<-ctx.Done()
+		close(cancelled)
+		return awsui.SSOLoginResult{}, ctx.Err()
+	}
+	execCmd := &ssoLoginExec{
+		profile: awsui.ProfileInfo{Name: "prod-sso"},
+		run:     runner,
+		timeout: 10 * time.Millisecond,
+	}
+
+	start := time.Now()
+	err := execCmd.Run()
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ssoLoginExec.Run() took %s, expected quick timeout", elapsed)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not observe context cancellation")
+	}
+	if !strings.Contains(err.Error(), "SSO login timed out after 10ms") {
+		t.Fatalf("timeout error = %q, want clear timeout", err.Error())
+	}
+
+	selector.Update(newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{}, err))
+	view := selector.ViewString()
+	if !strings.Contains(view, "SSO login failed: SSO login timed out after 10ms") {
+		t.Fatalf("ViewString() = %q, want timeout failure message", view)
+	}
+}
+
+func TestProfileSelectorLoginResultDisplayCompatibility(t *testing.T) {
+	tests := []struct {
+		name   string
+		msg    loginResultMsg
+		want   string
+		danger bool
+	}{
+		{
+			name: "sso success uses result kind default",
+			msg:  newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{Kind: awsui.SSOLoginRefreshed}, nil),
+			want: "SSO session ready",
+		},
+		{
+			name: "console success default message",
+			msg:  newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, nil),
+			want: "Console login successful",
+		},
+		{
+			name:   "sso failure",
+			msg:    newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{}, errors.New("boom")),
+			want:   "SSO login failed: boom",
+			danger: true,
+		},
+		{
+			name:   "console failure",
+			msg:    newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, errors.New("boom")),
+			want:   "Console login failed: boom",
+			danger: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selector := NewProfileSelector()
+			selector.SetSize(100, 50)
+			selector.Update(tt.msg)
+
+			view := selector.ViewString()
+			if !strings.Contains(view, tt.want) {
+				t.Fatalf("ViewString() = %q, want %q", view, tt.want)
+			}
+			if tt.danger && tt.msg.err == nil {
+				t.Fatal("danger case must carry an error")
+			}
+		})
 	}
 }
