@@ -85,6 +85,7 @@ func TestQueryResourcesRequiredParams(t *testing.T) {
 
 	if queryTool == nil {
 		t.Fatal("query_resources tool not found")
+		return
 	}
 
 	required, ok := queryTool.InputSchema["required"].([]string)

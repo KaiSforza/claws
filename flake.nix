@@ -14,13 +14,21 @@
 
         indexionPlatform = {
           "aarch64-darwin" = "darwin-arm64";
+          "x86_64-darwin" = "darwin-x64";
+          "aarch64-linux" = "linux-arm64";
           "x86_64-linux" = "linux-x64";
         }.${system} or (throw "indexion: unsupported system ${system}");
 
         indexionHash = {
           "darwin-arm64" = "1gbjfzwy9rgn7n79hj354w1jh2cqc6fvsj1m2zscvg6va6b1hdhl";
+          "darwin-x64" = "0000000000000000000000000000000000000000000000000000";
+          "linux-arm64" = "0000000000000000000000000000000000000000000000000000";
           "linux-x64" = "1pqll5vkb50fygq7ibqdry0lby54r50p17f75fv2s95xqy515c3i";
         }.${indexionPlatform};
+
+        # No upstream release binary for this platform yet (e.g. linux-arm64).
+        # Dummy hash = unsupported; drop indexion from the shell instead of failing.
+        indexionSupported = indexionHash != "0000000000000000000000000000000000000000000000000000";
 
         indexion = pkgs.stdenvNoCC.mkDerivation {
           pname = "indexion";
@@ -45,9 +53,10 @@
             golangci-lint
             vhs
             ttyd
-            indexion
             nodejs
             bash
+          ] ++ lib.optionals indexionSupported [
+            indexion
           ];
 
           env.GOROOT = "${pkgs.go_1_25}/share/go";

@@ -1,10 +1,16 @@
 package view
 
 import (
+	"context"
+	"errors"
+	"io"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	awsui "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/config"
 	navmsg "github.com/clawscli/claws/internal/msg"
 )
@@ -117,30 +123,34 @@ func TestProfileSelectorSSODetection(t *testing.T) {
 	}
 	selector.Update(profilesLoadedMsg{profiles: profiles})
 
-	var ssoProfile *profileItem
+	var ssoProfile profileItem
+	foundSSOProfile := false
 	for i := range selector.profiles {
 		if selector.profiles[i].isSSO {
-			ssoProfile = &selector.profiles[i]
+			ssoProfile = selector.profiles[i]
+			foundSSOProfile = true
 			break
 		}
 	}
 
-	if ssoProfile == nil {
+	if !foundSSOProfile {
 		t.Fatal("Expected to find SSO profile")
 	}
 	if ssoProfile.id != "prod-sso" {
 		t.Errorf("Expected SSO profile 'prod-sso', got %q", ssoProfile.id)
 	}
 
-	var nonSSOProfile *profileItem
+	var nonSSOProfile profileItem
+	foundNonSSOProfile := false
 	for i := range selector.profiles {
 		if !selector.profiles[i].isSSO {
-			nonSSOProfile = &selector.profiles[i]
+			nonSSOProfile = selector.profiles[i]
+			foundNonSSOProfile = true
 			break
 		}
 	}
 
-	if nonSSOProfile == nil {
+	if !foundNonSSOProfile {
 		t.Fatal("Expected to find non-SSO profile")
 	}
 	if nonSSOProfile.isSSO {
@@ -188,7 +198,7 @@ func TestProfileSelectorConsoleLoginSuccessSwitchesAndEmitsProfileChange(t *test
 		{id: "dev", display: "dev", isSSO: false},
 	}})
 
-	_, cmd := selector.Update(loginResultMsg{profileID: "dev", success: true, isConsoleLogin: true})
+	_, cmd := selector.Update(newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, nil))
 	if cmd == nil {
 		t.Fatal("Expected console login success to emit profile change command")
 	}
@@ -210,5 +220,136 @@ func TestProfileSelectorConsoleLoginSuccessSwitchesAndEmitsProfileChange(t *test
 	}
 	if !selector.selector.Selected()["dev"] {
 		t.Error("dev profile should be selected after console login")
+	}
+}
+
+func TestProfileSelectorSSOLoginUsesSDKRunner(t *testing.T) {
+	selector := NewProfileSelector()
+	selector.SetSize(100, 50)
+	selector.Update(profilesLoadedMsg{
+		profiles: []profileItem{{id: "prod-sso", display: "prod-sso", isSSO: true}},
+		infoMap: map[string]awsui.ProfileInfo{
+			"prod-sso": {
+				Name:         "prod-sso",
+				SSOSession:   "prod-session",
+				SSOStartURL:  "https://example.awsapps.com/start",
+				SSORegion:    "us-east-1",
+				SSOAccountID: "123456789012",
+				SSORoleName:  "ReadOnly",
+			},
+		},
+	})
+
+	called := false
+	selector.ssoLogin = func(_ context.Context, profile awsui.ProfileInfo, _ io.Writer) (awsui.SSOLoginResult, error) {
+		called = true
+		if profile.Name != "prod-sso" {
+			t.Fatalf("profile.Name = %q, want prod-sso", profile.Name)
+		}
+		return awsui.SSOLoginResult{Message: "SSO session ready", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
+
+	_, cmd := selector.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if cmd == nil {
+		t.Fatal("expected SSO login command")
+	}
+
+	execCmd := &ssoLoginExec{profile: selector.profileInfo["prod-sso"], run: selector.ssoLogin}
+	if err := execCmd.Run(); err != nil {
+		t.Fatalf("ssoLoginExec.Run() error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected SSO login runner to be called")
+	}
+	if execCmd.result.Message != "SSO session ready" {
+		t.Fatalf("result.Message = %q, want SSO session ready", execCmd.result.Message)
+	}
+}
+
+func TestProfileSelectorSSOLoginTimeoutCancelsRunner(t *testing.T) {
+	selector := NewProfileSelector()
+	selector.SetSize(100, 50)
+
+	cancelled := make(chan struct{})
+	runner := func(ctx context.Context, _ awsui.ProfileInfo, _ io.Writer) (awsui.SSOLoginResult, error) {
+		<-ctx.Done()
+		close(cancelled)
+		return awsui.SSOLoginResult{}, ctx.Err()
+	}
+	execCmd := &ssoLoginExec{
+		profile: awsui.ProfileInfo{Name: "prod-sso"},
+		run:     runner,
+		timeout: 10 * time.Millisecond,
+	}
+
+	start := time.Now()
+	err := execCmd.Run()
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ssoLoginExec.Run() took %s, expected quick timeout", elapsed)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not observe context cancellation")
+	}
+	if !strings.Contains(err.Error(), "SSO login timed out after 10ms") {
+		t.Fatalf("timeout error = %q, want clear timeout", err.Error())
+	}
+
+	selector.Update(newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{}, err))
+	view := selector.ViewString()
+	if !strings.Contains(view, "SSO login failed: SSO login timed out after 10ms") {
+		t.Fatalf("ViewString() = %q, want timeout failure message", view)
+	}
+}
+
+func TestProfileSelectorLoginResultDisplayCompatibility(t *testing.T) {
+	tests := []struct {
+		name   string
+		msg    loginResultMsg
+		want   string
+		danger bool
+	}{
+		{
+			name: "sso success uses result kind default",
+			msg:  newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{Kind: awsui.SSOLoginRefreshed}, nil),
+			want: "SSO session ready",
+		},
+		{
+			name: "console success default message",
+			msg:  newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, nil),
+			want: "Console login successful",
+		},
+		{
+			name:   "sso failure",
+			msg:    newLoginResult("prod-sso", loginKindSSO, awsui.SSOLoginResult{}, errors.New("boom")),
+			want:   "SSO login failed: boom",
+			danger: true,
+		},
+		{
+			name:   "console failure",
+			msg:    newLoginResult("dev", loginKindConsole, awsui.SSOLoginResult{}, errors.New("boom")),
+			want:   "Console login failed: boom",
+			danger: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selector := NewProfileSelector()
+			selector.SetSize(100, 50)
+			selector.Update(tt.msg)
+
+			view := selector.ViewString()
+			if !strings.Contains(view, tt.want) {
+				t.Fatalf("ViewString() = %q, want %q", view, tt.want)
+			}
+			if tt.danger && tt.msg.err == nil {
+				t.Fatal("danger case must carry an error")
+			}
+		})
 	}
 }

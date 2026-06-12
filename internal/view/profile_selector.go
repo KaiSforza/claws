@@ -1,8 +1,13 @@
 package view
 
 import (
-	"fmt"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -14,6 +19,8 @@ import (
 	navmsg "github.com/clawscli/claws/internal/msg"
 	"github.com/clawscli/claws/internal/ui"
 )
+
+const ssoLoginTimeout = 10 * time.Minute
 
 type profileItem struct {
 	id          string
@@ -30,11 +37,14 @@ type ProfileSelector struct {
 	selector    *MultiSelector[profileItem]
 	profiles    []profileItem
 	profileInfo map[string]aws.ProfileInfo
+	ssoLogin    ssoLoginRunner
 
 	loginResult *loginResultMsg
 	typeStyle   lipgloss.Style
 	regionStyle lipgloss.Style
 }
+
+type ssoLoginRunner func(context.Context, aws.ProfileInfo, io.Writer) (aws.SSOLoginResult, error)
 
 func NewProfileSelector() *ProfileSelector {
 	initialSelected := make([]string, 0)
@@ -45,6 +55,7 @@ func NewProfileSelector() *ProfileSelector {
 	p := &ProfileSelector{
 		selector:    NewMultiSelector[profileItem]("Select Profiles", initialSelected),
 		profileInfo: make(map[string]aws.ProfileInfo),
+		ssoLogin:    aws.RunSSOLogin,
 		typeStyle:   ui.DimStyle(),
 		regionStyle: ui.DimStyle(),
 	}
@@ -73,10 +84,49 @@ type profilesLoadedMsg struct {
 }
 
 type loginResultMsg struct {
-	profileID      string
-	success        bool
-	err            error
-	isConsoleLogin bool
+	profileID string
+	kind      loginKind
+	err       error
+	message   string
+}
+
+type loginKind int
+
+const (
+	loginKindSSO loginKind = iota
+	loginKindConsole
+)
+
+func (k loginKind) label() string {
+	switch k {
+	case loginKindConsole:
+		return "Console"
+	default:
+		return "SSO"
+	}
+}
+
+func newLoginResult(profileID string, kind loginKind, result aws.SSOLoginResult, err error) loginResultMsg {
+	msg := loginResultMsg{profileID: profileID, kind: kind, err: err}
+	if err != nil {
+		msg.message = kind.label() + " login failed: " + err.Error()
+		return msg
+	}
+
+	if kind == loginKindConsole {
+		msg.message = "Console login successful"
+		return msg
+	}
+	if result.Message != "" {
+		msg.message = result.Message
+		return msg
+	}
+	if message := result.Kind.Message(); message != "" {
+		msg.message = message
+		return msg
+	}
+	msg.message = "SSO login successful"
+	return msg
 }
 
 func (p *ProfileSelector) loadProfiles() tea.Msg {
@@ -117,8 +167,8 @@ func (p *ProfileSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loginResultMsg:
 		p.loginResult = &msg
-		if msg.success {
-			if msg.isConsoleLogin {
+		if msg.err == nil {
+			if msg.kind == loginKindConsole {
 				selected := p.selector.Selected()
 				for id := range selected {
 					delete(selected, id)
@@ -199,48 +249,78 @@ func (p *ProfileSelector) ssoLoginCurrentProfile() (tea.Model, tea.Cmd) {
 	}
 
 	if !profile.isSSO {
-		p.loginResult = &loginResultMsg{
-			profileID: profile.id,
-			success:   false,
-			err:       fmt.Errorf("profile %q is not SSO", profile.id),
-		}
-		p.updateExtraHeight()
-		return p, nil
+		return p.failLogin(profile.id, errors.New("profile "+strconv.Quote(profile.id)+" is not SSO"), loginKindSSO)
 	}
 
 	if config.Global().ReadOnly() && !action.IsExecAllowedInReadOnly(action.ActionNameSSOLogin) {
-		p.loginResult = &loginResultMsg{
-			profileID: profile.id,
-			success:   false,
-			err:       fmt.Errorf("SSO login denied: read-only mode"),
-		}
-		p.updateExtraHeight()
-		return p, nil
+		return p.failLogin(profile.id, errors.New("SSO login denied: read-only mode"), loginKindSSO)
 	}
 
-	awsPath, err := action.ResolveExecutable("aws")
-	if err != nil {
-		p.loginResult = &loginResultMsg{
-			profileID: profile.id,
-			success:   false,
-			err:       fmt.Errorf("aws CLI not found in PATH: %w", err),
-		}
-		p.updateExtraHeight()
-		return p, nil
+	profileInfo, ok := p.profileInfo[profile.id]
+	if !ok {
+		return p.failLogin(profile.id, errors.New("SSO profile metadata not loaded for "+strconv.Quote(profile.id)), loginKindSSO)
 	}
 
 	profileID := profile.id
-	execCmd := &action.SimpleExec{
-		Args:       []string{awsPath, "sso", "login", "--profile", profileID},
-		ActionName: action.ActionNameSSOLogin,
-		SkipAWSEnv: true,
+	execCmd := &ssoLoginExec{
+		profile: profileInfo,
+		run:     p.ssoLogin,
+		timeout: ssoLoginTimeout,
 	}
 	return p, tea.Exec(execCmd, func(err error) tea.Msg {
 		if err != nil {
-			return loginResultMsg{profileID: profileID, success: false, err: err}
+			return newLoginResult(profileID, loginKindSSO, aws.SSOLoginResult{}, err)
 		}
-		return loginResultMsg{profileID: profileID, success: true}
+		return newLoginResult(profileID, loginKindSSO, execCmd.result, nil)
 	})
+}
+
+func (p *ProfileSelector) failLogin(profileID string, err error, kind loginKind) (tea.Model, tea.Cmd) {
+	result := newLoginResult(profileID, kind, aws.SSOLoginResult{}, err)
+	p.loginResult = &result
+	p.updateExtraHeight()
+	return p, nil
+}
+
+type ssoLoginExec struct {
+	profile aws.ProfileInfo
+	run     ssoLoginRunner
+	result  aws.SSOLoginResult
+	timeout time.Duration
+
+	stdin  io.Reader
+	stdout io.Writer
+	stderr io.Writer
+}
+
+func (e *ssoLoginExec) SetStdin(r io.Reader)  { e.stdin = r }
+func (e *ssoLoginExec) SetStdout(w io.Writer) { e.stdout = w }
+func (e *ssoLoginExec) SetStderr(w io.Writer) { e.stderr = w }
+
+func (e *ssoLoginExec) Run() error {
+	stdout := e.stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	timeout := e.timeout
+	if timeout == 0 {
+		timeout = ssoLoginTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
+	defer cancel()
+
+	result, err := e.run(ctx, e.profile, stdout)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return errors.New("SSO login timed out after " + timeout.String())
+		}
+		return err
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.New("SSO login timed out after " + timeout.String())
+	}
+	e.result = result
+	return nil
 }
 
 func (p *ProfileSelector) consoleLoginCurrentProfile() (tea.Model, tea.Cmd) {
@@ -250,60 +330,33 @@ func (p *ProfileSelector) consoleLoginCurrentProfile() (tea.Model, tea.Cmd) {
 	}
 
 	if profile.id == config.ProfileIDSDKDefault || profile.id == config.ProfileIDEnvOnly {
-		p.loginResult = &loginResultMsg{
-			profileID:      profile.id,
-			success:        false,
-			err:            fmt.Errorf("console login requires named profile, got %q", profile.id),
-			isConsoleLogin: true,
-		}
-		p.updateExtraHeight()
-		return p, nil
+		return p.failLogin(profile.id, errors.New("console login requires named profile, got "+strconv.Quote(profile.id)), loginKindConsole)
 	}
 
 	if config.Global().ReadOnly() && !action.IsExecAllowedInReadOnly(action.ActionNameLogin) {
-		p.loginResult = &loginResultMsg{
-			profileID:      profile.id,
-			success:        false,
-			err:            fmt.Errorf("console login denied: read-only mode"),
-			isConsoleLogin: true,
-		}
-		p.updateExtraHeight()
-		return p, nil
-	}
-
-	if _, err := action.ResolveExecutable("aws"); err != nil {
-		p.loginResult = &loginResultMsg{
-			profileID:      profile.id,
-			success:        false,
-			err:            fmt.Errorf("aws CLI not found in PATH: %w", err),
-			isConsoleLogin: true,
-		}
-		p.updateExtraHeight()
-		return p, nil
+		return p.failLogin(profile.id, errors.New("console login denied: read-only mode"), loginKindConsole)
 	}
 
 	profileID := profile.id
 	execCmd, err := newProfileLoginExec(profileID)
 	if err != nil {
-		p.loginResult = &loginResultMsg{profileID: profileID, success: false, err: err, isConsoleLogin: true}
-		p.updateExtraHeight()
-		return p, nil
+		return p.failLogin(profileID, err, loginKindConsole)
 	}
 	return p, tea.Exec(execCmd, func(err error) tea.Msg {
 		if err != nil {
-			return loginResultMsg{profileID: profileID, success: false, err: err, isConsoleLogin: true}
+			return newLoginResult(profileID, loginKindConsole, aws.SSOLoginResult{}, err)
 		}
-		return loginResultMsg{profileID: profileID, success: true, isConsoleLogin: true}
+		return newLoginResult(profileID, loginKindConsole, aws.SSOLoginResult{}, nil)
 	})
 }
 
 func newProfileLoginExec(profileID string) (*action.SimpleExec, error) {
 	if !config.IsValidProfileName(profileID) {
-		return nil, fmt.Errorf("invalid profile name: %s", profileID)
+		return nil, errors.New("invalid profile name: " + profileID)
 	}
 	awsPath, err := action.ResolveExecutable("aws")
 	if err != nil {
-		return nil, fmt.Errorf("aws CLI not found in PATH: %w", err)
+		return nil, errors.New("aws CLI not found in PATH: " + err.Error())
 	}
 	return &action.SimpleExec{
 		Args:       []string{awsPath, "login", "--remote", "--profile", profileID},
@@ -317,14 +370,10 @@ func (p *ProfileSelector) ViewString() string {
 
 	if p.loginResult != nil {
 		content += "\n"
-		loginType := "SSO"
-		if p.loginResult.isConsoleLogin {
-			loginType = "Console"
-		}
-		if p.loginResult.success {
-			content += ui.SuccessStyle().Render(loginType + " login successful")
+		if p.loginResult.err == nil {
+			content += ui.SuccessStyle().Render(p.loginResult.message)
 		} else {
-			content += ui.DangerStyle().Render(loginType + " login failed: " + p.loginResult.err.Error())
+			content += ui.DangerStyle().Render(p.loginResult.message)
 		}
 	}
 

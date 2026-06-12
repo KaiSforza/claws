@@ -134,6 +134,7 @@ func TestProcessResults_WithData(t *testing.T) {
 	r0 := data.Results["i-abc"]
 	if r0 == nil {
 		t.Fatal("i-abc not found")
+		return
 	}
 	if !r0.HasData || r0.Latest != 30.0 || len(r0.Values) != 3 {
 		t.Errorf("i-abc: HasData=%v, Latest=%v, len=%d", r0.HasData, r0.Latest, len(r0.Values))
@@ -142,6 +143,7 @@ func TestProcessResults_WithData(t *testing.T) {
 	r1 := data.Results["i-def"]
 	if r1 == nil {
 		t.Fatal("i-def not found")
+		return
 	}
 	if !r1.HasData || r1.Latest != 15.0 {
 		t.Errorf("i-def: HasData=%v, Latest=%v", r1.HasData, r1.Latest)
@@ -150,6 +152,7 @@ func TestProcessResults_WithData(t *testing.T) {
 	r2 := data.Results["i-ghi"]
 	if r2 == nil {
 		t.Fatal("i-ghi not found")
+		return
 	}
 	if r2.HasData {
 		t.Errorf("i-ghi should have no data")

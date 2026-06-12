@@ -2,7 +2,6 @@ package aws
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"gopkg.in/ini.v1"
 
 	appconfig "github.com/clawscli/claws/internal/config"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/log"
 )
 
@@ -26,10 +26,30 @@ type ProfileInfo struct {
 	SSOSession     string
 	SSOStartURL    string
 	SSORegion      string
+	SSOScopes      string
 	SSOAccountID   string
 	SSORoleName    string
 	HasCredentials bool
 	AccessKeyID    string // masked
+}
+
+type ssoSessionInfo struct {
+	startURL string
+	region   string
+	scopes   string
+}
+
+func (session ssoSessionInfo) merge(startURL, region, scopes string) (string, string, string) {
+	if startURL == "" {
+		startURL = session.startURL
+	}
+	if region == "" {
+		region = session.region
+	}
+	if scopes == "" {
+		scopes = session.scopes
+	}
+	return startURL, region, scopes
 }
 
 // LoadProfiles parses ~/.aws/config and ~/.aws/credentials files
@@ -42,7 +62,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	if configPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("get user home dir: %w", err)
+			return nil, apperrors.Wrap(err, "get user home dir")
 		}
 		configPath = filepath.Join(homeDir, ".aws", "config")
 	}
@@ -52,6 +72,18 @@ func LoadProfiles() ([]ProfileInfo, error) {
 		log.Debug("failed to parse aws config", "path", configPath, "error", err)
 	}
 	if err == nil {
+		ssoSessions := make(map[string]ssoSessionInfo)
+		for _, section := range cfg.Sections() {
+			name := section.Name()
+			if sessionName, found := strings.CutPrefix(name, "sso-session "); found {
+				ssoSessions[sessionName] = ssoSessionInfo{
+					startURL: section.Key("sso_start_url").String(),
+					region:   section.Key("sso_region").String(),
+					scopes:   section.Key("sso_registration_scopes").String(),
+				}
+			}
+		}
+
 		for _, section := range cfg.Sections() {
 			name := section.Name()
 			if name == "DEFAULT" {
@@ -73,6 +105,11 @@ func LoadProfiles() ([]ProfileInfo, error) {
 
 			ssoStartURL := section.Key("sso_start_url").String()
 			ssoSession := section.Key("sso_session").String()
+			ssoRegion := section.Key("sso_region").String()
+			ssoScopes := section.Key("sso_registration_scopes").String()
+			if session, ok := ssoSessions[ssoSession]; ok {
+				ssoStartURL, ssoRegion, ssoScopes = session.merge(ssoStartURL, ssoRegion, ssoScopes)
+			}
 			roleArn := section.Key("role_arn").String()
 
 			info := &ProfileInfo{
@@ -83,7 +120,8 @@ func LoadProfiles() ([]ProfileInfo, error) {
 				SourceProfile: section.Key("source_profile").String(),
 				SSOSession:    ssoSession,
 				SSOStartURL:   ssoStartURL,
-				SSORegion:     section.Key("sso_region").String(),
+				SSORegion:     ssoRegion,
+				SSOScopes:     ssoScopes,
 				SSOAccountID:  section.Key("sso_account_id").String(),
 				SSORoleName:   section.Key("sso_role_name").String(),
 			}
@@ -96,7 +134,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	if credPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("get user home dir: %w", err)
+			return nil, apperrors.Wrap(err, "get user home dir")
 		}
 		credPath = filepath.Join(homeDir, ".aws", "credentials")
 	}

@@ -12,6 +12,7 @@ func TestDefaultTheme(t *testing.T) {
 
 	if theme == nil {
 		t.Fatal("DefaultTheme() returned nil")
+		return
 	}
 
 	// Check that primary colors are set (not nil)
@@ -42,6 +43,7 @@ func TestCurrent(t *testing.T) {
 
 	if theme == nil {
 		t.Fatal("Current() returned nil")
+		return
 	}
 
 	// Current should return the same as DefaultTheme initially
@@ -568,6 +570,7 @@ func TestGetPresetColors(t *testing.T) {
 			theme := GetPreset(name)
 			if theme == nil {
 				t.Fatalf("GetPreset(%q) returned nil", name)
+				return
 			}
 
 			if theme.Primary == nil {

@@ -17,6 +17,7 @@ func TestDiffView_New(t *testing.T) {
 
 	if dv == nil {
 		t.Fatal("NewDiffView() returned nil")
+		return
 	}
 	if dv.left.GetID() != "i-111" {
 		t.Errorf("left.GetID() = %q, want %q", dv.left.GetID(), "i-111")
