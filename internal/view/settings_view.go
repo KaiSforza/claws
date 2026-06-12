@@ -114,7 +114,7 @@ func (v *SettingsView) ViewString() string {
 }
 
 func (v *SettingsView) StatusLine() string {
-	return ""
+	return "j/k:scroll • Esc:close"
 }
 
 func (v *SettingsView) SetSize(w, h int) tea.Cmd {
