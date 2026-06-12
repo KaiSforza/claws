@@ -340,6 +340,7 @@ func openBrowser(uri string) error {
 		command = "xdg-open"
 		args = []string{uri}
 	}
+	//nolint:noctx // Browser launch is intentionally detached; S5 forbids meaningless context.Background().
 	cmd := exec.Command(command, args...)
 	if err := cmd.Start(); err != nil {
 		return apperrors.Wrap(err, "open browser")
