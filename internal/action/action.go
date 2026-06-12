@@ -26,7 +26,7 @@ var (
 
 // UnknownOperationError creates an error for unknown operations
 func UnknownOperationError(operation string) error {
-	return fmt.Errorf("unknown operation: %s", operation)
+	return apperrors.Wrap(errors.New(operation), "unknown operation")
 }
 
 // InvalidResourceResult returns a standard result for invalid resource type
@@ -275,10 +275,10 @@ func ExecuteWithDAO(ctx context.Context, action Action, resource dao.Resource, s
 		if executor := Global.GetExecutor(service, resourceType); executor != nil {
 			result = executor(ctx, action, resource)
 		} else {
-			result = ActionResult{Success: false, Error: fmt.Errorf("no executor registered for %s/%s", service, resourceType)}
+			result = ActionResult{Success: false, Error: apperrors.Wrap(errors.New(service+"/"+resourceType), "no executor registered for")}
 		}
 	default:
-		result = ActionResult{Success: false, Error: fmt.Errorf("unknown action type: %s", action.Type)}
+		result = ActionResult{Success: false, Error: apperrors.Wrap(errors.New(string(action.Type)), "unknown action type")}
 	}
 
 	if result.Success {
