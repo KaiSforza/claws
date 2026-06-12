@@ -346,36 +346,41 @@ func executeExec(ctx context.Context, action Action, resource dao.Resource) Acti
 // ExpandArgs replaces variables in command arguments with resource values.
 // Arguments are executed without a shell, so shell metacharacters are preserved as literals.
 func ExpandArgs(args []string, resource dao.Resource) ([]string, error) {
+	vars := resourceVars(resource)
 	expanded := make([]string, len(args))
 	for i, arg := range args {
-		replacements := map[string]string{
-			"${ID}":          resource.GetID(),
-			"${NAME}":        resource.GetName(),
-			"${ARN}":         resource.GetARN(),
-			"${INSTANCE_ID}": resource.GetID(),
-			"${BUCKET}":      resource.GetID(),
-		}
-
-		if p, ok := resource.(PrivateIPProvider); ok {
-			replacements["${PRIVATE_IP}"] = p.PrivateIP()
-		}
-		if p, ok := resource.(ClusterArnProvider); ok {
-			replacements["${CLUSTER}"] = p.ClusterArn()
-		}
-		if p, ok := resource.(ContainerNameProvider); ok {
-			replacements["${CONTAINER}"] = p.FirstContainerName()
-		}
-		if p, ok := resource.(LogGroupNameProvider); ok {
-			replacements["${LOG_GROUP}"] = p.LogGroupName()
-		}
-
 		expandedArg := arg
-		for k, v := range replacements {
+		for k, v := range vars {
 			expandedArg = strings.ReplaceAll(expandedArg, k, v)
 		}
 		expanded[i] = expandedArg
 	}
 	return expanded, nil
+}
+
+func resourceVars(resource dao.Resource) map[string]string {
+	replacements := map[string]string{
+		"${ID}":          resource.GetID(),
+		"${NAME}":        resource.GetName(),
+		"${ARN}":         resource.GetARN(),
+		"${INSTANCE_ID}": resource.GetID(),
+		"${BUCKET}":      resource.GetID(),
+	}
+
+	if p, ok := resource.(PrivateIPProvider); ok {
+		replacements["${PRIVATE_IP}"] = p.PrivateIP()
+	}
+	if p, ok := resource.(ClusterArnProvider); ok {
+		replacements["${CLUSTER}"] = p.ClusterArn()
+	}
+	if p, ok := resource.(ContainerNameProvider); ok {
+		replacements["${CONTAINER}"] = p.FirstContainerName()
+	}
+	if p, ok := resource.(LogGroupNameProvider); ok {
+		replacements["${LOG_GROUP}"] = p.LogGroupName()
+	}
+
+	return replacements
 }
 
 // Optional interfaces for variable expansion in action commands.
@@ -415,37 +420,17 @@ var ErrUnsafeValue = errors.New("variable value contains unsafe characters")
 //
 // Returns an error if any value contains shell metacharacters.
 func ExpandVariables(cmd string, resource dao.Resource) (string, error) {
-	replacements := map[string]string{
-		"${ID}":          resource.GetID(),
-		"${NAME}":        resource.GetName(),
-		"${ARN}":         resource.GetARN(),
-		"${INSTANCE_ID}": resource.GetID(),
-		"${BUCKET}":      resource.GetID(),
-	}
-
-	// Optional variables from interface implementations
-	if p, ok := resource.(PrivateIPProvider); ok {
-		replacements["${PRIVATE_IP}"] = p.PrivateIP()
-	}
-	if p, ok := resource.(ClusterArnProvider); ok {
-		replacements["${CLUSTER}"] = p.ClusterArn()
-	}
-	if p, ok := resource.(ContainerNameProvider); ok {
-		replacements["${CONTAINER}"] = p.FirstContainerName()
-	}
-	if p, ok := resource.(LogGroupNameProvider); ok {
-		replacements["${LOG_GROUP}"] = p.LogGroupName()
-	}
+	vars := resourceVars(resource)
 
 	// Check for unsafe characters in values that will be substituted
-	for k, v := range replacements {
+	for k, v := range vars {
 		if strings.Contains(cmd, k) && containsShellMetachar(v) {
-			return "", fmt.Errorf("%w: %s contains shell metacharacters", ErrUnsafeValue, k)
+			return "", apperrors.Wrapf(ErrUnsafeValue, "%s contains shell metacharacters", k)
 		}
 	}
 
 	result := cmd
-	for k, v := range replacements {
+	for k, v := range vars {
 		result = strings.ReplaceAll(result, k, v)
 	}
 	return result, nil
@@ -457,7 +442,7 @@ func containsShellMetachar(s string) bool {
 	// Check for characters that have special meaning in shell
 	for _, c := range s {
 		switch c {
-		case ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r':
+		case ' ', '\'', '"', '\\', ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r':
 			return true
 		}
 	}
