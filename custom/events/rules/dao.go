@@ -100,6 +100,8 @@ func (d *RuleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 	if targetsOutput, err := d.client.ListTargetsByRule(ctx, targetsInput); err == nil {
 		res.Targets = targetsOutput.Targets
+	} else {
+		log.Warn("failed to list rule targets", "rule", id, "error", err)
 	}
 
 	return res, nil
@@ -115,7 +117,10 @@ func (d *RuleDAO) Delete(ctx context.Context, id string) error {
 		targetsInput.EventBusName = &eventBusName
 	}
 	targetsOutput, err := d.client.ListTargetsByRule(ctx, targetsInput)
-	if err == nil && len(targetsOutput.Targets) > 0 {
+	if err != nil {
+		return apperrors.Wrapf(err, "list targets for rule %s", id)
+	}
+	if len(targetsOutput.Targets) > 0 {
 		var targetIds []string
 		for _, target := range targetsOutput.Targets {
 			if target.Id != nil {
