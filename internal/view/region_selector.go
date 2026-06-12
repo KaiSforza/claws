@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -138,7 +139,7 @@ func (r *RegionSelector) StatusLine() string {
 	if r.selector.FilterActive() {
 		return "Type to filter • Enter confirm • Esc cancel"
 	}
-	return "Space:toggle • a:all • n:none • Enter:apply • " + strings.Repeat("●", count) + " selected"
+	return "Space:toggle • a:all • n:none • Enter:apply • " + strconv.Itoa(count) + " selected"
 }
 
 func (r *RegionSelector) HasActiveInput() bool {

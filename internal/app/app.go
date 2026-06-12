@@ -525,6 +525,8 @@ func (a *App) View() tea.View {
 			} else {
 				statusContent = ui.SuccessStyle().Render("✓ " + a.clipboardFlash)
 			}
+		} else if a.modal != nil {
+			statusContent = a.modal.Content.StatusLine()
 		} else if a.currentView != nil {
 			statusContent = a.currentView.StatusLine()
 		}

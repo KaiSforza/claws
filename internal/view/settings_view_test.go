@@ -29,8 +29,8 @@ func TestSettingsView_StatusLine(t *testing.T) {
 	sv := NewSettingsView(context.Background())
 
 	status := sv.StatusLine()
-	if status != "" {
-		t.Error("StatusLine() should return empty string for modal")
+	if status != "j/k:scroll • Esc:close" {
+		t.Errorf("StatusLine() should return key hints for modal, got: %s", status)
 	}
 }
 
