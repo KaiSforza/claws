@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,7 @@ import (
 // MockView is a simple view for testing
 type MockView struct {
 	name        string
+	status      string
 	hasInput    bool
 	escReceived bool
 }
@@ -23,8 +25,13 @@ func (m *MockView) Init() tea.Cmd                     { return nil }
 func (m *MockView) View() tea.View                    { return tea.NewView(m.name) }
 func (m *MockView) ViewString() string                { return m.name }
 func (m *MockView) SetSize(width, height int) tea.Cmd { return nil }
-func (m *MockView) StatusLine() string                { return m.name }
-func (m *MockView) HasActiveInput() bool              { return m.hasInput }
+func (m *MockView) StatusLine() string {
+	if m.status != "" {
+		return m.status
+	}
+	return m.name
+}
+func (m *MockView) HasActiveInput() bool { return m.hasInput }
 func (m *MockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "esc" {
 		m.escReceived = true
@@ -408,6 +415,33 @@ func TestModalShowAndHide(t *testing.T) {
 	}
 	if app.currentView.StatusLine() != "ServiceBrowser" {
 		t.Errorf("Expected currentView to remain ServiceBrowser, got %s", app.currentView.StatusLine())
+	}
+}
+
+func TestStatusLineShowsModalContentWhileModalOpen(t *testing.T) {
+	app := newTestApp(t)
+	app.currentView = &MockView{name: "ServiceBrowser", status: "browser-status"}
+
+	rendered := app.View().Content
+	if !strings.Contains(rendered, "browser-status") {
+		t.Fatalf("View() without modal should contain current view status, got %q", rendered)
+	}
+
+	app.modal = &view.Modal{Content: &MockView{name: "ProfileSelector", status: "modal-status"}}
+
+	rendered = app.View().Content
+	if !strings.Contains(rendered, "modal-status") {
+		t.Fatalf("View() with modal should contain modal status, got %q", rendered)
+	}
+	if strings.Contains(rendered, "browser-status") {
+		t.Fatalf("View() with modal should not contain underlying view status, got %q", rendered)
+	}
+
+	app.modal = nil
+
+	rendered = app.View().Content
+	if !strings.Contains(rendered, "browser-status") {
+		t.Fatalf("View() after closing modal should contain current view status, got %q", rendered)
 	}
 }
 
