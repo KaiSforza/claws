@@ -91,3 +91,33 @@ sso_registration_scopes = sso:account:access
 		t.Errorf("SSORoleName = %q", profile.SSORoleName)
 	}
 }
+
+func TestSSOSessionInfoMergePreservesProfileValues(t *testing.T) {
+	session := ssoSessionInfo{
+		startURL: "https://session.awsapps.com/start",
+		region:   "us-east-1",
+		scopes:   "sso:account:access",
+	}
+
+	startURL, region, scopes := session.merge("https://profile.awsapps.com/start", "ap-northeast-1", "custom:scope")
+	if startURL != "https://profile.awsapps.com/start" {
+		t.Fatalf("startURL = %q", startURL)
+	}
+	if region != "ap-northeast-1" {
+		t.Fatalf("region = %q", region)
+	}
+	if scopes != "custom:scope" {
+		t.Fatalf("scopes = %q", scopes)
+	}
+
+	startURL, region, scopes = session.merge("", "", "")
+	if startURL != session.startURL {
+		t.Fatalf("fallback startURL = %q", startURL)
+	}
+	if region != session.region {
+		t.Fatalf("fallback region = %q", region)
+	}
+	if scopes != session.scopes {
+		t.Fatalf("fallback scopes = %q", scopes)
+	}
+}

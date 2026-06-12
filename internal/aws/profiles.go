@@ -2,7 +2,6 @@ package aws
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"gopkg.in/ini.v1"
 
 	appconfig "github.com/clawscli/claws/internal/config"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/log"
 )
 
@@ -39,6 +39,19 @@ type ssoSessionInfo struct {
 	scopes   string
 }
 
+func (session ssoSessionInfo) merge(startURL, region, scopes string) (string, string, string) {
+	if startURL == "" {
+		startURL = session.startURL
+	}
+	if region == "" {
+		region = session.region
+	}
+	if scopes == "" {
+		scopes = session.scopes
+	}
+	return startURL, region, scopes
+}
+
 // LoadProfiles parses ~/.aws/config and ~/.aws/credentials files
 // and returns a sorted list of profile information.
 // Respects AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE environment variables.
@@ -49,7 +62,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	if configPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("get user home dir: %w", err)
+			return nil, apperrors.Wrap(err, "get user home dir")
 		}
 		configPath = filepath.Join(homeDir, ".aws", "config")
 	}
@@ -95,15 +108,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 			ssoRegion := section.Key("sso_region").String()
 			ssoScopes := section.Key("sso_registration_scopes").String()
 			if session, ok := ssoSessions[ssoSession]; ok {
-				if ssoStartURL == "" {
-					ssoStartURL = session.startURL
-				}
-				if ssoRegion == "" {
-					ssoRegion = session.region
-				}
-				if ssoScopes == "" {
-					ssoScopes = session.scopes
-				}
+				ssoStartURL, ssoRegion, ssoScopes = session.merge(ssoStartURL, ssoRegion, ssoScopes)
 			}
 			roleArn := section.Key("role_arn").String()
 
@@ -129,7 +134,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	if credPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("get user home dir: %w", err)
+			return nil, apperrors.Wrap(err, "get user home dir")
 		}
 		credPath = filepath.Join(homeDir, ".aws", "credentials")
 	}

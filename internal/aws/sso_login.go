@@ -19,18 +19,52 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sso"
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
+
+	apperrors "github.com/clawscli/claws/internal/errors"
+	"github.com/clawscli/claws/internal/log"
 )
 
 const (
 	ssoDeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 	ssoRefreshGrantType    = "refresh_token"
 	ssoDefaultScope        = "sso:account:access"
+
+	// RFC 8628 §3.5 requires a default polling interval and +5s slow_down backoff.
+	ssoDefaultPollInterval = 5 * time.Second
+	ssoSlowDownIncrement   = 5 * time.Second
+)
+
+var ErrSSOAuthorizationExpired = errors.New("SSO device authorization expired")
+
+type SSOLoginKind int
+
+const (
+	SSOLoginRefreshed SSOLoginKind = iota
+	SSOLoginNew
+)
+
+var (
+	loadSSOConfig                      = config.LoadDefaultConfig
+	retrieveSSORoleCredentialsForLogin = retrieveSSORoleCredentials
+	startSSODeviceLoginForLogin        = startSSODeviceLogin
 )
 
 // SSOLoginResult describes what the SSO login/refresh operation did.
 type SSOLoginResult struct {
+	Kind      SSOLoginKind
 	Message   string
 	ExpiresAt time.Time
+}
+
+func (k SSOLoginKind) Message() string {
+	switch k {
+	case SSOLoginRefreshed:
+		return "SSO session ready"
+	case SSOLoginNew:
+		return "SSO login successful"
+	default:
+		return ""
+	}
 }
 
 type ssoCachedToken struct {
@@ -55,9 +89,9 @@ func RunSSOLogin(ctx context.Context, profile ProfileInfo, out io.Writer) (SSOLo
 		return SSOLoginResult{}, err
 	}
 
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(profile.SSORegion))
+	cfg, err := loadSSOConfig(ctx, config.WithRegion(profile.SSORegion))
 	if err != nil {
-		return SSOLoginResult{}, fmt.Errorf("load SSO OIDC config: %w", err)
+		return SSOLoginResult{}, apperrors.Wrap(err, "load SSO OIDC config")
 	}
 
 	tokenPath, err := ssoTokenCachePath(profile)
@@ -65,23 +99,31 @@ func RunSSOLogin(ctx context.Context, profile ProfileInfo, out io.Writer) (SSOLo
 		return SSOLoginResult{}, err
 	}
 
-	if expiresAt, err := retrieveSSORoleCredentials(ctx, cfg, profile, tokenPath); err == nil {
+	if expiresAt, err := retrieveSSORoleCredentialsForLogin(ctx, cfg, profile, tokenPath); err == nil {
+		kind := SSOLoginRefreshed
 		return SSOLoginResult{
-			Message:   "SSO session ready",
+			Kind:      kind,
+			Message:   kind.Message(),
 			ExpiresAt: expiresAt,
 		}, nil
+	} else if apperrors.IsThrottling(err) {
+		return SSOLoginResult{}, err
+	} else {
+		log.Debug("cached SSO credentials unusable", "profile", profile.Name, "error", err)
 	}
 
-	if err := startSSODeviceLogin(ctx, cfg, profile, tokenPath, out); err != nil {
+	if err := startSSODeviceLoginForLogin(ctx, cfg, profile, tokenPath, out); err != nil {
 		return SSOLoginResult{}, err
 	}
 
-	expiresAt, err := retrieveSSORoleCredentials(ctx, cfg, profile, tokenPath)
+	expiresAt, err := retrieveSSORoleCredentialsForLogin(ctx, cfg, profile, tokenPath)
 	if err != nil {
-		return SSOLoginResult{}, fmt.Errorf("validate SSO role credentials: %w", err)
+		return SSOLoginResult{}, apperrors.Wrap(err, "validate SSO role credentials")
 	}
+	kind := SSOLoginNew
 	return SSOLoginResult{
-		Message:   "SSO login successful",
+		Kind:      kind,
+		Message:   kind.Message(),
 		ExpiresAt: expiresAt,
 	}, nil
 }
@@ -101,7 +143,7 @@ func validateSSOProfile(profile ProfileInfo) error {
 		missing = append(missing, "sso_role_name")
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("profile %q is missing SSO settings: %s", profile.Name, strings.Join(missing, ", "))
+		return apperrors.Wrapf(errors.New(strings.Join(missing, ", ")), "profile %q is missing SSO settings", profile.Name)
 	}
 	return nil
 }
@@ -113,7 +155,7 @@ func ssoTokenCachePath(profile ProfileInfo) (string, error) {
 	}
 	path, err := ssocreds.StandardCachedTokenFilepath(key)
 	if err != nil {
-		return "", fmt.Errorf("resolve SSO token cache path: %w", err)
+		return "", apperrors.Wrap(err, "resolve SSO token cache path")
 	}
 	return path, nil
 }
@@ -141,7 +183,7 @@ func startSSODeviceLogin(ctx context.Context, cfg awssdk.Config, profile Profile
 		Scopes:     ssoScopes(profile),
 	})
 	if err != nil {
-		return fmt.Errorf("register SSO OIDC client: %w", err)
+		return apperrors.Wrap(err, "register SSO OIDC client")
 	}
 
 	deviceOutput, err := client.StartDeviceAuthorization(ctx, &ssooidc.StartDeviceAuthorizationInput{
@@ -150,13 +192,15 @@ func startSSODeviceLogin(ctx context.Context, cfg awssdk.Config, profile Profile
 		StartUrl:     awssdk.String(profile.SSOStartURL),
 	})
 	if err != nil {
-		return fmt.Errorf("start SSO device authorization: %w", err)
+		return apperrors.Wrap(err, "start SSO device authorization")
 	}
 
 	writeDeviceInstructions(out, deviceOutput)
 	if uri := awssdk.ToString(deviceOutput.VerificationUriComplete); uri != "" {
 		if err := openBrowser(uri); err == nil {
 			_, _ = fmt.Fprintln(out, "Opened the authorization URL in your browser.")
+		} else {
+			log.Debug("failed to open SSO authorization URL", "error", err)
 		}
 	}
 
@@ -205,9 +249,13 @@ func writeDeviceInstructions(out io.Writer, deviceOutput *ssooidc.StartDeviceAut
 func pollSSODeviceToken(ctx context.Context, client *ssooidc.Client, registerOutput *ssooidc.RegisterClientOutput, deviceOutput *ssooidc.StartDeviceAuthorizationOutput) (*ssooidc.CreateTokenOutput, error) {
 	interval := time.Duration(deviceOutput.Interval) * time.Second
 	if interval <= 0 {
-		interval = 5 * time.Second
+		interval = ssoDefaultPollInterval
 	}
-	deadline := time.Now().Add(time.Duration(deviceOutput.ExpiresIn) * time.Second)
+	expiresIn := deviceOutput.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 600
+	}
+	deadline := time.Now().Add(time.Duration(expiresIn) * time.Second)
 
 	for time.Now().Before(deadline) {
 		if err := sleepContext(ctx, interval); err != nil {
@@ -228,12 +276,12 @@ func pollSSODeviceToken(ctx context.Context, client *ssooidc.Client, registerOut
 		}
 		var slowDown *ssooidctypes.SlowDownException
 		if errors.As(err, &slowDown) {
-			interval += 5 * time.Second
+			interval += ssoSlowDownIncrement
 			continue
 		}
-		return nil, fmt.Errorf("create SSO token: %w", err)
+		return nil, apperrors.Wrap(err, "create SSO token")
 	}
-	return nil, fmt.Errorf("SSO device authorization expired")
+	return nil, ErrSSOAuthorizationExpired
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) error {
@@ -249,7 +297,7 @@ func sleepContext(ctx context.Context, duration time.Duration) error {
 
 func storeSSOToken(tokenPath string, profile ProfileInfo, registerOutput *ssooidc.RegisterClientOutput, createOutput *ssooidc.CreateTokenOutput) error {
 	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
-		return fmt.Errorf("create SSO cache directory: %w", err)
+		return apperrors.Wrap(err, "create SSO cache directory")
 	}
 	expiresAt := time.Now().Add(time.Duration(createOutput.ExpiresIn) * time.Second).UTC()
 	registrationExpiresAt := time.Unix(registerOutput.ClientSecretExpiresAt, 0).UTC()
@@ -265,23 +313,20 @@ func storeSSOToken(tokenPath string, profile ProfileInfo, registerOutput *ssooid
 	}
 	data, err := json.MarshalIndent(token, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal SSO cache token: %w", err)
+		return apperrors.Wrap(err, "marshal SSO cache token")
 	}
 	tmpPath := fmt.Sprintf("%s.tmp-%d", tokenPath, time.Now().UnixNano())
 	if err := os.WriteFile(tmpPath, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write SSO cache token: %w", err)
+		return apperrors.Wrap(err, "write SSO cache token")
 	}
 	if err := os.Rename(tmpPath, tokenPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace SSO cache token: %w", err)
+		return apperrors.Wrap(err, "replace SSO cache token")
 	}
 	return nil
 }
 
 func openBrowser(uri string) error {
-	if uri == "" {
-		return nil
-	}
 	var command string
 	var args []string
 	switch runtime.GOOS {
@@ -295,9 +340,10 @@ func openBrowser(uri string) error {
 		command = "xdg-open"
 		args = []string{uri}
 	}
-	cmd := exec.CommandContext(context.Background(), command, args...)
+	cmd := exec.Command(command, args...)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("open browser: %w", err)
+		return apperrors.Wrap(err, "open browser")
 	}
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
