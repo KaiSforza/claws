@@ -406,7 +406,7 @@ func (p *ProfileSelector) StatusLine() string {
 		}
 	}
 
-	return "Space:toggle • d:detail • Enter:apply" + loginHints + " • " + strings.Repeat("●", count) + " selected"
+	return "Space:toggle • d:detail • Enter:apply" + loginHints + " • " + strconv.Itoa(count) + " selected"
 }
 
 func (p *ProfileSelector) HasActiveInput() bool {
