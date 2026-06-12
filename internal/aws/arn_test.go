@@ -198,6 +198,7 @@ func TestParseARN(t *testing.T) {
 
 			if got == nil {
 				t.Fatalf("ParseARN() = nil, want non-nil")
+				return
 			}
 
 			if got.Service != tt.wantService {
@@ -314,6 +315,7 @@ func TestARN_ServiceResourceType(t *testing.T) {
 			parsed := ParseARN(tt.arn)
 			if parsed == nil {
 				t.Fatalf("ParseARN() returned nil")
+				return
 			}
 
 			service, resourceType := parsed.ServiceResourceType()
@@ -355,6 +357,7 @@ func TestARN_ShortID(t *testing.T) {
 			parsed := ParseARN(tt.arn)
 			if parsed == nil {
 				t.Fatalf("ParseARN() returned nil")
+				return
 			}
 
 			if got := parsed.ShortID(); got != tt.wantID {
@@ -397,6 +400,7 @@ func TestARN_CanNavigate(t *testing.T) {
 			parsed := ParseARN(tt.arn)
 			if parsed == nil {
 				t.Fatalf("ParseARN() returned nil")
+				return
 			}
 
 			if got := parsed.CanNavigate(); got != tt.canNav {
@@ -528,6 +532,7 @@ func TestARN_ExtractParentFilter(t *testing.T) {
 			parsed := ParseARN(tt.arn)
 			if parsed == nil {
 				t.Fatalf("ParseARN() returned nil")
+				return
 			}
 
 			gotKey, gotValue := parsed.ExtractParentFilter()

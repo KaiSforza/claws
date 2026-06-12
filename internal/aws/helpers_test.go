@@ -50,6 +50,7 @@ func TestStringPtr(t *testing.T) {
 	p := StringPtr(s)
 	if p == nil {
 		t.Fatal("StringPtr() returned nil")
+		return
 	}
 	if *p != s {
 		t.Errorf("*StringPtr() = %q, want %q", *p, s)
@@ -61,6 +62,7 @@ func TestBoolPtr(t *testing.T) {
 	p := BoolPtr(b)
 	if p == nil {
 		t.Fatal("BoolPtr() returned nil")
+		return
 	}
 	if *p != b {
 		t.Errorf("*BoolPtr() = %v, want %v", *p, b)
@@ -72,6 +74,7 @@ func TestInt32Ptr(t *testing.T) {
 	p := Int32Ptr(i)
 	if p == nil {
 		t.Fatal("Int32Ptr() returned nil")
+		return
 	}
 	if *p != i {
 		t.Errorf("*Int32Ptr() = %d, want %d", *p, i)
