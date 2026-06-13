@@ -2,7 +2,7 @@ package tasks
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -10,7 +10,6 @@ import (
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
-	"github.com/clawscli/claws/internal/log"
 )
 
 // TaskDAO provides data access for ECS tasks
@@ -55,16 +54,17 @@ func (d *TaskDAO) listAllTasks(ctx context.Context) ([]dao.Resource, error) {
 	}
 
 	resources := make([]dao.Resource, 0, len(clusterArns))
+	var errs []error
 	for _, clusterArn := range clusterArns {
 		clusterTasks, err := d.listTasksInCluster(ctx, clusterArn)
 		if err != nil {
-			log.Warn("failed to list tasks in cluster", "cluster", clusterArn, "error", err)
+			errs = append(errs, apperrors.Wrapf(err, "list tasks in cluster %s", clusterArn))
 			continue
 		}
 		resources = append(resources, clusterTasks...)
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *TaskDAO) listTasksInCluster(ctx context.Context, cluster string) ([]dao.Resource, error) {
@@ -94,6 +94,7 @@ func (d *TaskDAO) listTasksInCluster(ctx context.Context, cluster string) ([]dao
 
 	// Describe tasks in batches of 100 (API limit)
 	resources := make([]dao.Resource, 0, len(taskArns))
+	var errs []error
 	for i := 0; i < len(taskArns); i += 100 {
 		end := i + 100
 		if end > len(taskArns) {
@@ -107,7 +108,7 @@ func (d *TaskDAO) listTasksInCluster(ctx context.Context, cluster string) ([]dao
 
 		descOutput, err := d.client.DescribeTasks(ctx, descInput)
 		if err != nil {
-			log.Warn("failed to describe tasks", "cluster", cluster, "error", err)
+			errs = append(errs, apperrors.Wrapf(err, "describe tasks in cluster %s", cluster))
 			continue
 		}
 
@@ -116,13 +117,13 @@ func (d *TaskDAO) listTasksInCluster(ctx context.Context, cluster string) ([]dao
 		}
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *TaskDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
 	if clusterName == "" {
-		return nil, fmt.Errorf("cluster name filter required")
+		return nil, errors.New("cluster name filter required")
 	}
 
 	input := &ecs.DescribeTasksInput{
@@ -136,7 +137,7 @@ func (d *TaskDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if len(output.Tasks) == 0 {
-		return nil, fmt.Errorf("task not found: %s", id)
+		return nil, errors.New("task not found: " + id)
 	}
 
 	return NewTaskResource(output.Tasks[0]), nil
@@ -145,7 +146,7 @@ func (d *TaskDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 func (d *TaskDAO) Delete(ctx context.Context, id string) error {
 	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
 	if clusterName == "" {
-		return fmt.Errorf("cluster name filter required")
+		return errors.New("cluster name filter required")
 	}
 
 	input := &ecs.StopTaskInput{
