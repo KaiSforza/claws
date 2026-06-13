@@ -2,7 +2,7 @@ package quotas
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
@@ -143,7 +143,7 @@ func NewQuotaDAO(ctx context.Context) (dao.DAO, error) {
 func (d *QuotaDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	serviceCode := dao.GetFilterFromContext(ctx, "ServiceCode")
 	if serviceCode == "" {
-		return nil, fmt.Errorf("ServiceCode filter required. Navigate from services (q key) or use :service-quotas/services")
+		return nil, errors.New("ServiceCode filter required. Navigate from services (q key) or use :service-quotas/services")
 	}
 
 	var resources []dao.Resource
@@ -170,7 +170,7 @@ func (d *QuotaDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	// We need the service code to get a quota
 	serviceCode := dao.GetFilterFromContext(ctx, "ServiceCode")
 	if serviceCode == "" {
-		return nil, fmt.Errorf("service code required")
+		return nil, errors.New("service code required")
 	}
 
 	output, err := d.client.GetServiceQuota(ctx, &servicequotas.GetServiceQuotaInput{
@@ -182,7 +182,7 @@ func (d *QuotaDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if output.Quota == nil {
-		return nil, nil
+		return nil, errors.New("quota not found: " + id)
 	}
 
 	return NewQuotaResource(*output.Quota), nil
@@ -190,7 +190,7 @@ func (d *QuotaDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 
 // Delete is not supported for quotas
 func (d *QuotaDAO) Delete(ctx context.Context, id string) error {
-	return fmt.Errorf("delete not supported for quotas")
+	return errors.New("delete not supported for quotas")
 }
 
 // Supports returns whether an operation is supported

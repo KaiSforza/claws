@@ -701,6 +701,10 @@ func (e *ToolExecutor) getResourceDetail(ctx context.Context, service, resourceT
 		log.Warn("getResourceDetail Get failed", "service", service, "resourceType", resourceType, "id", id, "error", err)
 		return fmt.Sprintf("Error getting resource: %v", err), true
 	}
+	if resource == nil {
+		log.Warn("getResourceDetail Get returned nil resource", "service", service, "resourceType", resourceType, "id", id)
+		return fmt.Sprintf("Error getting resource: %s/%s %s not found", service, resourceType, id), true
+	}
 
 	return formatResourceDetail(resource), false
 }
