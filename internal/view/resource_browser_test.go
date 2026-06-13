@@ -13,6 +13,17 @@ import (
 	"github.com/clawscli/claws/internal/registry"
 )
 
+type rawMockResource struct {
+	*mockResource
+	raw any
+}
+
+func (m *rawMockResource) Raw() any { return m.raw }
+
+type fieldFilterRaw struct {
+	VpcId string
+}
+
 func TestResourceBrowserFilterEsc(t *testing.T) {
 	ctx := context.Background()
 	reg := registry.New()
@@ -296,6 +307,58 @@ func TestResourceBrowserClearFilterClearsAll(t *testing.T) {
 	}
 	if browser.fieldFilterValue != "" {
 		t.Errorf("fieldFilterValue = %q, want empty", browser.fieldFilterValue)
+	}
+}
+
+func TestResourceBrowserFieldFilterMatchesRawField(t *testing.T) {
+	browser := NewResourceBrowser(context.Background(), registry.New(), "ec2")
+	browser.fieldFilter = "VpcId"
+	browser.fieldFilterValue = "vpc-123"
+
+	matched := browser.matchesFieldFilter(&rawMockResource{
+		mockResource: &mockResource{id: "i-1", name: "instance"},
+		raw:          fieldFilterRaw{VpcId: "vpc-123"},
+	})
+	if !matched {
+		t.Fatal("matchesFieldFilter() = false, want true")
+	}
+}
+
+func TestResourceBrowserFieldFilterPreservesServerSideFilteredMissingField(t *testing.T) {
+	browser := NewResourceBrowser(context.Background(), registry.New(), "ec2")
+	browser.fieldFilter = "SubnetId"
+	browser.fieldFilterValue = "subnet-123"
+
+	matched := browser.matchesFieldFilter(&rawMockResource{
+		mockResource: &mockResource{id: "i-1", name: "instance"},
+		raw:          fieldFilterRaw{VpcId: "vpc-123"},
+	})
+	if !matched {
+		t.Fatal("matchesFieldFilter() = false for missing field, want true")
+	}
+}
+
+func TestResourceBrowserFieldFilterPreservesServerSideFilteredNilRaw(t *testing.T) {
+	browser := NewResourceBrowser(context.Background(), registry.New(), "ec2")
+	browser.fieldFilter = "VpcId"
+	browser.fieldFilterValue = "vpc-123"
+
+	if !browser.matchesFieldFilter(&mockResource{id: "i-1", name: "instance"}) {
+		t.Fatal("matchesFieldFilter() = false for nil raw data, want true")
+	}
+}
+
+func TestResourceBrowserFieldFilterRejectsMismatchedRawField(t *testing.T) {
+	browser := NewResourceBrowser(context.Background(), registry.New(), "ec2")
+	browser.fieldFilter = "VpcId"
+	browser.fieldFilterValue = "vpc-123"
+
+	matched := browser.matchesFieldFilter(&rawMockResource{
+		mockResource: &mockResource{id: "i-1", name: "instance"},
+		raw:          fieldFilterRaw{VpcId: "vpc-999"},
+	})
+	if matched {
+		t.Fatal("matchesFieldFilter() = true for mismatched field, want false")
 	}
 }
 

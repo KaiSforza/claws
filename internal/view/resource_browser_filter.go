@@ -108,17 +108,14 @@ func (r *ResourceBrowser) matchesFieldFilter(res dao.Resource) bool {
 	// Then try field-based matching using reflection
 	data := res.Raw()
 	if data == nil {
-		// No raw data - assume DAO already filtered
+		// Some DAOs apply context filters server-side and don't expose the filter field in Raw.
 		return true
 	}
 
-	// Try to get the field value using the getter interface
-	fieldValue := getFieldValue(data, r.fieldFilter)
+	fieldValue, found := getFieldValue(data, r.fieldFilter)
 
-	// If field not found (empty string), assume DAO already filtered correctly
-	// This handles cases like ECS where DAO uses "ClusterName" context filter
-	// but the actual struct has "ClusterArn" field
-	if fieldValue == "" {
+	if !found {
+		// Preserve server-side filtered resources when the SDK shape uses a different field name.
 		return true
 	}
 
@@ -147,9 +144,9 @@ func (r *ResourceBrowser) matchesFilter(res dao.Resource, cols []render.Column, 
 }
 
 // getFieldValue extracts a field value from an AWS resource using reflection
-func getFieldValue(data any, fieldName string) string {
+func getFieldValue(data any, fieldName string) (string, bool) {
 	if data == nil {
-		return ""
+		return "", false
 	}
 
 	v := reflect.ValueOf(data)
@@ -157,26 +154,26 @@ func getFieldValue(data any, fieldName string) string {
 	// Handle pointer
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
-			return ""
+			return "", false
 		}
 		v = v.Elem()
 	}
 
 	// Must be a struct
 	if v.Kind() != reflect.Struct {
-		return ""
+		return "", false
 	}
 
 	// Get the field
 	field := v.FieldByName(fieldName)
 	if !field.IsValid() {
-		return ""
+		return "", false
 	}
 
 	// Handle pointer fields (common in AWS SDK)
 	if field.Kind() == reflect.Ptr {
 		if field.IsNil() {
-			return ""
+			return "", true
 		}
 		field = field.Elem()
 	}
@@ -184,12 +181,12 @@ func getFieldValue(data any, fieldName string) string {
 	// Return string representation
 	switch field.Kind() {
 	case reflect.String:
-		return field.String()
+		return field.String(), true
 	case reflect.Int, reflect.Int32, reflect.Int64:
-		return fmt.Sprintf("%d", field.Int())
+		return fmt.Sprintf("%d", field.Int()), true
 	case reflect.Bool:
-		return fmt.Sprintf("%v", field.Bool())
+		return fmt.Sprintf("%v", field.Bool()), true
 	default:
-		return fmt.Sprintf("%v", field.Interface())
+		return fmt.Sprintf("%v", field.Interface()), true
 	}
 }
