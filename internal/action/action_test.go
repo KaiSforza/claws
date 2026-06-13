@@ -37,6 +37,89 @@ func TestSimpleExecArgsTreatShellMetacharactersAsLiteral(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommandSharedPath(t *testing.T) {
+	ctx := context.Background()
+	resource := &mockResource{id: "shared-id"}
+
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{
+			name:    "shell command",
+			command: "echo shared-id",
+		},
+		{
+			name: "args command",
+			args: []string{"/bin/echo", "shared-id"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fromExecuteExec, err := buildExecCommand(ctx, "echo ${ID}", []string{}, resource)
+			if len(tt.args) > 0 {
+				fromExecuteExec, err = buildExecCommand(ctx, "", []string{"/bin/echo", "${ID}"}, resource)
+			}
+			if err != nil {
+				t.Fatalf("buildExecCommand() returned error: %v", err)
+			}
+
+			fromSimple, err := (&SimpleExec{Command: tt.command, Args: tt.args}).command(ctx)
+			if err != nil {
+				t.Fatalf("SimpleExec.command() returned error: %v", err)
+			}
+			fromHeader, err := (&ExecWithHeader{Command: tt.command, Args: tt.args}).command(ctx)
+			if err != nil {
+				t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+			}
+
+			setAWSEnv(fromExecuteExec, "us-east-1")
+			setAWSEnv(fromSimple, "us-east-1")
+			setAWSEnv(fromHeader, "us-east-1")
+			assertSameCommand(t, fromExecuteExec, fromSimple)
+			assertSameCommand(t, fromExecuteExec, fromHeader)
+		})
+	}
+}
+
+func TestBuildExecCommandSmoke(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd, err := buildExecCommand(context.Background(), "", []string{"/bin/echo", "hello"}, nil)
+	if err != nil {
+		t.Fatalf("buildExecCommand() returned error: %v", err)
+	}
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if got, want := stdout.String(), "hello\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func assertSameCommand(t *testing.T, want, got *exec.Cmd) {
+	t.Helper()
+	if got.Path != want.Path {
+		t.Fatalf("Path = %q, want %q", got.Path, want.Path)
+	}
+	assertSameStrings(t, "Args", got.Args, want.Args)
+	assertSameStrings(t, "Env", got.Env, want.Env)
+}
+
+func assertSameStrings(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s len = %d, want %d", label, len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%d] = %q, want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
 func TestResolveArgsExecutableReturnsCopy(t *testing.T) {
 	original := []string{"/bin/echo", "hello"}
 	resolved, err := ResolveArgsExecutable(original)

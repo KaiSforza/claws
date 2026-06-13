@@ -291,43 +291,10 @@ func ExecuteWithDAO(ctx context.Context, action Action, resource dao.Resource, s
 }
 
 func executeExec(ctx context.Context, action Action, resource dao.Resource) ActionResult {
-	if len(action.Args) > 0 {
-		args, err := ExpandArgs(action.Args, resource)
-		if err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-		if len(args) == 0 || args[0] == "" {
-			return ActionResult{Success: false, Error: ErrEmptyCommand}
-		}
-		args, err = ResolveArgsExecutable(args)
-		if err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-
-		execCmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		execCmd.Stdin = os.Stdin
-		execCmd.Stdout = os.Stdout
-		execCmd.Stderr = os.Stderr
-		if !action.SkipAWSEnv {
-			setAWSEnv(execCmd, aws.GetRegionFromContext(ctx))
-		}
-		if err := execCmd.Run(); err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-		return ActionResult{Success: true, Message: "Command executed successfully"}
-	}
-
-	cmd, err := ExpandVariables(action.Command, resource)
+	execCmd, err := buildExecCommand(ctx, action.Command, action.Args, resource)
 	if err != nil {
 		return ActionResult{Success: false, Error: err}
 	}
-	if cmd == "" {
-		return ActionResult{Success: false, Error: ErrEmptyCommand}
-	}
-
-	// Execute command through shell to properly handle quoted arguments,
-	// pipes, redirections, and other shell features
-	execCmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
 	execCmd.Stdin = os.Stdin
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
@@ -341,6 +308,44 @@ func executeExec(ctx context.Context, action Action, resource dao.Resource) Acti
 	}
 
 	return ActionResult{Success: true, Message: "Command executed successfully"}
+}
+
+func buildExecCommand(ctx context.Context, command string, args []string, resource dao.Resource) (*exec.Cmd, error) {
+	if len(args) > 0 {
+		return buildArgsCommand(ctx, args, resource)
+	}
+	return buildShellCommand(ctx, command, resource)
+}
+
+func buildArgsCommand(ctx context.Context, args []string, resource dao.Resource) (*exec.Cmd, error) {
+	expanded := append([]string(nil), args...)
+	if resource != nil {
+		var err error
+		expanded, err = ExpandArgs(args, resource)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resolved, err := ResolveArgsExecutable(expanded)
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, resolved[0], resolved[1:]...), nil
+}
+
+func buildShellCommand(ctx context.Context, command string, resource dao.Resource) (*exec.Cmd, error) {
+	expanded := command
+	if resource != nil {
+		var err error
+		expanded, err = ExpandVariables(command, resource)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if expanded == "" {
+		return nil, ErrEmptyCommand
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", expanded), nil
 }
 
 // ExpandArgs replaces variables in command arguments with resource values.

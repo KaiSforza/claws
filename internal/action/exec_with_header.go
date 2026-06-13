@@ -15,6 +15,7 @@ import (
 	"github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/config"
 	"github.com/clawscli/claws/internal/dao"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/ui"
 )
 
@@ -53,23 +54,6 @@ func (e *SimpleExec) Run() error {
 		return ErrReadOnlyDenied
 	}
 
-	if e.Command == "" && len(e.Args) == 0 {
-		return ErrEmptyCommand
-	}
-
-	stdin := e.stdin
-	stdout := e.stdout
-	stderr := e.stderr
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-	if stdout == nil {
-		stdout = os.Stdout
-	}
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-
 	cmdCtx := e.Context
 	if cmdCtx == nil {
 		cmdCtx = context.Background()
@@ -78,6 +62,7 @@ func (e *SimpleExec) Run() error {
 	if err != nil {
 		return err
 	}
+	stdin, stdout, stderr := e.stdio()
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -88,21 +73,25 @@ func (e *SimpleExec) Run() error {
 	return cmd.Run()
 }
 
+func (e *SimpleExec) stdio() (io.Reader, io.Writer, io.Writer) {
+	return stdio(e.stdin, e.stdout, e.stderr)
+}
+
 func (e *SimpleExec) command(ctx context.Context) (*exec.Cmd, error) {
-	if len(e.Args) > 0 {
-		if e.Args[0] == "" {
-			return nil, ErrEmptyCommand
-		}
-		args, err := ResolveArgsExecutable(e.Args)
-		if err != nil {
-			return nil, err
-		}
-		return exec.CommandContext(ctx, args[0], args[1:]...), nil
+	return buildExecCommand(ctx, e.Command, e.Args, nil)
+}
+
+func stdio(stdin io.Reader, stdout, stderr io.Writer) (io.Reader, io.Writer, io.Writer) {
+	if stdin == nil {
+		stdin = os.Stdin
 	}
-	if e.Command == "" {
-		return nil, ErrEmptyCommand
+	if stdout == nil {
+		stdout = os.Stdout
 	}
-	return exec.CommandContext(ctx, "/bin/sh", "-c", e.Command), nil
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	return stdin, stdout, stderr
 }
 
 // ResolveExecutable resolves name to the executable path that will be invoked.
@@ -116,7 +105,7 @@ func ResolveExecutable(name string) (string, error) {
 	}
 	path, err := exec.LookPath(name)
 	if err != nil {
-		return "", fmt.Errorf("resolve executable %q: %w", name, err)
+		return "", apperrors.Wrapf(err, "resolve executable %q", name)
 	}
 	return path, nil
 }
@@ -173,107 +162,91 @@ func (e *ExecWithHeader) Run() error {
 	if config.Global().ReadOnly() && !IsExecAllowedInReadOnly(e.ActionName) {
 		return ErrReadOnlyDenied
 	}
+	stdin, stdout, stderr := e.stdio()
+	_, height := e.prepareTerminal(stdout)
+	cmdCtx := e.context()
+	cmd, err := e.command(cmdCtx)
+	if err != nil {
+		return err
+	}
+	err = e.runCommand(cmd, stdin, stdout, stderr)
+	e.finishTerminal(stdout, height)
+	e.showFailure(stdin, stdout, err)
 
-	// Use provided or default stdin/stdout/stderr
-	stdin := e.stdin
-	stdout := e.stdout
-	stderr := e.stderr
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-	if stdout == nil {
-		stdout = os.Stdout
-	}
-	if stderr == nil {
-		stderr = os.Stderr
-	}
+	return err
+}
 
-	// Get terminal size (try stdout first, then fallback)
+func (e *ExecWithHeader) stdio() (io.Reader, io.Writer, io.Writer) {
+	return stdio(e.stdin, e.stdout, e.stderr)
+}
+
+func (e *ExecWithHeader) context() context.Context {
+	if e.Context != nil {
+		return e.Context
+	}
+	return context.Background()
+}
+
+func (e *ExecWithHeader) prepareTerminal(stdout io.Writer) (int, int) {
+	width, height := terminalSize(stdout)
+	headerLines := e.renderHeader(stdout, width)
+	scrollTop := headerLines + 1
+	_, _ = fmt.Fprintf(stdout, "\x1b[%d;%dr", scrollTop, height)
+	_, _ = fmt.Fprintf(stdout, "\x1b[%d;1H", scrollTop)
+	return width, height
+}
+
+func terminalSize(stdout io.Writer) (int, int) {
 	width, height := 80, 24
 	if f, ok := stdout.(*os.File); ok {
 		if w, h, err := term.GetSize(int(f.Fd())); err == nil {
 			width, height = w, h
 		}
 	}
+	return width, height
+}
 
-	// Build header content
+func (e *ExecWithHeader) renderHeader(stdout io.Writer, width int) int {
 	header := e.buildHeader(width)
 	headerLines := strings.Count(header, "\n") + 1
-
-	// Clear screen and move to top
 	_, _ = fmt.Fprint(stdout, "\x1b[2J\x1b[H")
-
-	// Print header
 	_, _ = fmt.Fprint(stdout, header)
-
-	// Print separator
 	_, _ = fmt.Fprintln(stdout, ui.DimStyle().Render(strings.Repeat("─", width)))
-	headerLines++
+	return headerLines + 1
+}
 
-	// Set scroll region to exclude header (1-indexed)
-	// ESC [ top ; bottom r - Set scrolling region
-	scrollTop := headerLines + 1
-	scrollBottom := height
-	_, _ = fmt.Fprintf(stdout, "\x1b[%d;%dr", scrollTop, scrollBottom)
-
-	// Move cursor to scroll region
-	_, _ = fmt.Fprintf(stdout, "\x1b[%d;1H", scrollTop)
-
-	cmdCtx := e.Context
-	if cmdCtx == nil {
-		cmdCtx = context.Background()
-	}
-
-	cmd, err := e.command(cmdCtx)
-	if err != nil {
-		return err
-	}
+func (e *ExecWithHeader) runCommand(cmd *exec.Cmd, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if !e.SkipAWSEnv {
 		setAWSEnv(cmd, e.Region)
 	}
+	return cmd.Run()
+}
 
-	// Run the command
-	err = cmd.Run()
-
-	// Reset scroll region
+func (e *ExecWithHeader) finishTerminal(stdout io.Writer, height int) {
 	_, _ = fmt.Fprint(stdout, "\x1b[r")
-
-	// Move to bottom and clear
 	_, _ = fmt.Fprintf(stdout, "\x1b[%d;1H", height)
+}
 
-	// If command failed, show error and wait for keypress
-	if err != nil {
-		errorStyle := ui.BoldDangerStyle()
-		_, _ = fmt.Fprintln(stdout)
-		_, _ = fmt.Fprintln(stdout, errorStyle.Render("Command failed: ")+err.Error())
-		_, _ = fmt.Fprintln(stdout)
-		_, _ = fmt.Fprint(stdout, "Press Enter to continue...")
-
-		// Wait for Enter key
-		buf := make([]byte, 1)
-		if f, ok := stdin.(*os.File); ok {
-			_, _ = f.Read(buf)
-		}
+func (e *ExecWithHeader) showFailure(stdin io.Reader, stdout io.Writer, err error) {
+	if err == nil {
+		return
 	}
-
-	return err
+	errorStyle := ui.BoldDangerStyle()
+	_, _ = fmt.Fprintln(stdout)
+	_, _ = fmt.Fprintln(stdout, errorStyle.Render("Command failed: ")+err.Error())
+	_, _ = fmt.Fprintln(stdout)
+	_, _ = fmt.Fprint(stdout, "Press Enter to continue...")
+	buf := make([]byte, 1)
+	if f, ok := stdin.(*os.File); ok {
+		_, _ = f.Read(buf)
+	}
 }
 
 func (e *ExecWithHeader) command(ctx context.Context) (*exec.Cmd, error) {
-	if len(e.Args) > 0 {
-		args, err := ResolveArgsExecutable(e.Args)
-		if err != nil {
-			return nil, err
-		}
-		return exec.CommandContext(ctx, args[0], args[1:]...), nil
-	}
-	if e.Command == "" {
-		return nil, ErrEmptyCommand
-	}
-	return exec.CommandContext(ctx, "/bin/sh", "-c", e.Command), nil
+	return buildExecCommand(ctx, e.Command, e.Args, nil)
 }
 
 func (e *ExecWithHeader) buildHeader(_ int) string {
