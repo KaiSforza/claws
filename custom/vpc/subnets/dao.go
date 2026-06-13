@@ -3,6 +3,7 @@ package subnets
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -36,27 +37,12 @@ func (d *SubnetDAO) List(ctx context.Context) ([]dao.Resource, error) {
 		return nil, apperrors.Wrap(err, "describe subnets")
 	}
 
-	// Get route tables to determine public/private subnets
-	publicSubnets, publicVPCs := d.getPublicSubnets(ctx)
+	// Get route tables to determine public/private subnets.
+	publicIndex := d.getPublicSubnetIndex(ctx)
 
 	var resources []dao.Resource
 	for _, subnet := range output.Subnets {
-		isPublic := false
-		if subnet.SubnetId != nil {
-			if _, ok := publicSubnets[*subnet.SubnetId]; ok {
-				// Explicitly associated with a public route table
-				isPublic = true
-			} else if subnet.VpcId != nil {
-				// Check if VPC's main route table is public and subnet has no explicit association
-				if _, ok := publicVPCs[*subnet.VpcId]; ok {
-					// Need to check if this subnet has an explicit RT association
-					if !d.hasExplicitRouteTableAssociation(ctx, *subnet.SubnetId) {
-						isPublic = true
-					}
-				}
-			}
-		}
-		resources = append(resources, NewSubnetResourceWithPublic(subnet, isPublic))
+		resources = append(resources, NewSubnetResourceWithPublic(subnet, publicIndex.IsPublic(subnet)))
 	}
 
 	return resources, nil
@@ -74,7 +60,8 @@ func (d *SubnetDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		return nil, fmt.Errorf("subnet not found: %s", id)
 	}
 
-	return NewSubnetResource(output.Subnets[0]), nil
+	publicIndex := d.getPublicSubnetIndex(ctx)
+	return NewSubnetResourceWithPublic(output.Subnets[0], publicIndex.IsPublic(output.Subnets[0])), nil
 }
 
 func (d *SubnetDAO) Delete(ctx context.Context, id string) error {
@@ -93,61 +80,94 @@ func (d *SubnetDAO) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// getPublicSubnets returns subnet IDs with IGW routes and VPC IDs whose main RT has IGW route
-func (d *SubnetDAO) getPublicSubnets(ctx context.Context) (publicSubnets map[string]struct{}, publicVPCs map[string]struct{}) {
-	publicSubnets = make(map[string]struct{})
-	publicVPCs = make(map[string]struct{})
+type publicSubnetIndex struct {
+	publicSubnets               map[string]struct{}
+	publicVPCs                  map[string]struct{}
+	explicitlyAssociatedSubnets map[string]struct{}
+}
+
+func newPublicSubnetIndex() publicSubnetIndex {
+	return publicSubnetIndex{
+		publicSubnets:               make(map[string]struct{}),
+		publicVPCs:                  make(map[string]struct{}),
+		explicitlyAssociatedSubnets: make(map[string]struct{}),
+	}
+}
+
+// IsPublic returns whether a subnet is public based on route table associations.
+func (i publicSubnetIndex) IsPublic(subnet types.Subnet) bool {
+	if subnet.SubnetId == nil {
+		return false
+	}
+
+	subnetID := *subnet.SubnetId
+	if _, ok := i.publicSubnets[subnetID]; ok {
+		return true
+	}
+
+	if subnet.VpcId == nil {
+		return false
+	}
+	if _, ok := i.publicVPCs[*subnet.VpcId]; !ok {
+		return false
+	}
+
+	_, hasExplicitAssociation := i.explicitlyAssociatedSubnets[subnetID]
+	return !hasExplicitAssociation
+}
+
+// getPublicSubnetIndex returns subnet IDs with IGW routes, VPC IDs whose main RT has an IGW route,
+// and subnet IDs that have explicit route table associations.
+func (d *SubnetDAO) getPublicSubnetIndex(ctx context.Context) publicSubnetIndex {
+	index := newPublicSubnetIndex()
 
 	// Get all route tables
 	rtOutput, err := d.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{})
 	if err != nil {
-		return // Return empty on error, fail gracefully
+		return index // Return empty on error, fail gracefully
 	}
 
-	for _, rt := range rtOutput.RouteTables {
-		// Check if this route table has a route to an internet gateway
-		hasIGWRoute := false
-		for _, route := range rt.Routes {
-			if route.GatewayId != nil && len(*route.GatewayId) > 4 &&
-				(*route.GatewayId)[:4] == "igw-" {
-				hasIGWRoute = true
-				break
-			}
-		}
+	return buildPublicSubnetIndex(rtOutput.RouteTables)
+}
+
+func buildPublicSubnetIndex(routeTables []types.RouteTable) publicSubnetIndex {
+	index := newPublicSubnetIndex()
+
+	for _, rt := range routeTables {
+		hasIGWRoute := hasInternetGatewayRoute(rt)
 
 		if !hasIGWRoute {
+			for _, assoc := range rt.Associations {
+				if assoc.SubnetId != nil {
+					index.explicitlyAssociatedSubnets[*assoc.SubnetId] = struct{}{}
+				}
+			}
 			continue
 		}
 
 		// Mark explicitly associated subnets as public
 		for _, assoc := range rt.Associations {
 			if assoc.SubnetId != nil {
-				publicSubnets[*assoc.SubnetId] = struct{}{}
+				index.explicitlyAssociatedSubnets[*assoc.SubnetId] = struct{}{}
+				index.publicSubnets[*assoc.SubnetId] = struct{}{}
 			}
 			// If this is the main route table for a VPC with IGW route
 			if assoc.Main != nil && *assoc.Main && rt.VpcId != nil {
-				publicVPCs[*rt.VpcId] = struct{}{}
+				index.publicVPCs[*rt.VpcId] = struct{}{}
 			}
 		}
 	}
 
-	return
+	return index
 }
 
-// hasExplicitRouteTableAssociation checks if a subnet has an explicit route table association
-func (d *SubnetDAO) hasExplicitRouteTableAssociation(ctx context.Context, subnetID string) bool {
-	rtOutput, err := d.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
-		Filters: []types.Filter{
-			{
-				Name:   appaws.StringPtr("association.subnet-id"),
-				Values: []string{subnetID},
-			},
-		},
-	})
-	if err != nil {
-		return false
+func hasInternetGatewayRoute(routeTable types.RouteTable) bool {
+	for _, route := range routeTable.Routes {
+		if route.GatewayId != nil && strings.HasPrefix(*route.GatewayId, "igw-") {
+			return true
+		}
 	}
-	return len(rtOutput.RouteTables) > 0
+	return false
 }
 
 // SubnetResource wraps a Subnet
