@@ -100,7 +100,7 @@ func (d *BucketDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		regionClient = d.client
 	}
 
-	// Fetch extended details (errors are ignored for each API call)
+	// Fetch extended details sequentially; optional fetch failures are recorded as enrichment status.
 	d.fetchVersioning(ctx, regionClient, id, resource)
 	d.fetchEncryption(ctx, regionClient, id, resource)
 	d.fetchPublicAccessBlock(ctx, regionClient, id, resource)

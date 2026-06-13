@@ -215,8 +215,11 @@ func TestS3EnrichmentClassifiesNotConfiguredErrors(t *testing.T) {
 		code string
 		want enrichment.Status
 	}{
-		{name: "encryption not configured", code: "ServerSideEncryptionConfigurationNotFoundError", want: enrichment.NotConfigured},
-		{name: "public access block not configured", code: "NoSuchPublicAccessBlockConfiguration", want: enrichment.NotConfigured},
+		{name: "encryption not configured", code: encryptionNotConfiguredCode, want: enrichment.NotConfigured},
+		{name: "public access block not configured", code: publicAccessBlockNotConfiguredCode, want: enrichment.NotConfigured},
+		{name: "lifecycle not configured", code: lifecycleNotConfiguredCode, want: enrichment.NotConfigured},
+		{name: "object lock not configured", code: objectLockNotConfiguredCode, want: enrichment.NotConfigured},
+		{name: "tags not configured", code: tagsNotConfiguredCode, want: enrichment.NotConfigured},
 		{name: "access denied", code: "AccessDeniedException", want: enrichment.AccessDenied},
 		{name: "other failure", code: "InternalError", want: enrichment.FetchFailed},
 	}
@@ -224,7 +227,13 @@ func TestS3EnrichmentClassifiesNotConfiguredErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := &smithy.GenericAPIError{Code: tt.code, Message: tt.name}
-			if got := enrichment.ClassifyError(err, encryptionNotConfiguredCode, publicAccessBlockNotConfiguredCode); got != tt.want {
+			if got := enrichment.ClassifyError(err,
+				encryptionNotConfiguredCode,
+				publicAccessBlockNotConfiguredCode,
+				lifecycleNotConfiguredCode,
+				objectLockNotConfiguredCode,
+				tagsNotConfiguredCode,
+			); got != tt.want {
 				t.Fatalf("ClassifyError(%q) = %q, want %q", tt.code, got, tt.want)
 			}
 		})
