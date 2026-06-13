@@ -6,7 +6,6 @@ import (
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
-	"github.com/clawscli/claws/internal/enrichment"
 	"github.com/clawscli/claws/internal/render"
 )
 
@@ -114,13 +113,12 @@ func (r *UserRenderer) RenderDetail(resource dao.Resource) string {
 		d.Field("Password Last Used", "Never (no console access or never used)")
 	}
 
-	// Access Keys
 	d.Section("Access Keys")
-	if enrichment.IsFailure(ur.AccessKeysStatus) {
-		d.Field("Access Keys", enrichment.Display(ur.AccessKeysStatus))
-	} else if len(ur.AccessKeys) == 0 {
+	d.StatusBranch(ur.AccessKeysStatus, len(ur.AccessKeys) > 0, func(value string) {
+		d.Field("Access Keys", value)
+	}, func() {
 		d.Field("Access Keys", render.Empty)
-	} else {
+	}, func() {
 		d.Field("Access Key Count", fmt.Sprintf("%d", len(ur.AccessKeys)))
 		for i, key := range ur.AccessKeys {
 			keyInfo := fmt.Sprintf("%s (%s)", appaws.Str(key.AccessKeyId), key.Status)
@@ -129,15 +127,14 @@ func (r *UserRenderer) RenderDetail(resource dao.Resource) string {
 			}
 			d.Field(fmt.Sprintf("  Key %d", i+1), keyInfo)
 		}
-	}
+	})
 
-	// MFA Devices
 	d.Section("MFA")
-	if enrichment.IsFailure(ur.MFADevicesStatus) {
-		d.Field("MFA Status", enrichment.Display(ur.MFADevicesStatus))
-	} else if len(ur.MFADevices) == 0 {
+	d.StatusBranch(ur.MFADevicesStatus, len(ur.MFADevices) > 0, func(value string) {
+		d.Field("MFA Status", value)
+	}, func() {
 		d.Field("MFA Status", "Not enabled")
-	} else {
+	}, func() {
 		d.Field("MFA Status", "Enabled")
 		d.Field("MFA Device Count", fmt.Sprintf("%d", len(ur.MFADevices)))
 		for i, mfa := range ur.MFADevices {
@@ -148,32 +145,25 @@ func (r *UserRenderer) RenderDetail(resource dao.Resource) string {
 				d.Field(fmt.Sprintf("  Device %d", i+1), serial)
 			}
 		}
-	}
+	})
 
-	// Groups
 	d.Section("Groups")
-	if enrichment.IsFailure(ur.GroupsStatus) {
-		d.Field("Groups", enrichment.Display(ur.GroupsStatus))
-	} else if len(ur.Groups) == 0 {
+	d.StatusBranch(ur.GroupsStatus, len(ur.Groups) > 0, func(value string) {
+		d.Field("Groups", value)
+	}, func() {
 		d.Field("Groups", render.Empty)
-	} else {
+	}, func() {
 		d.Field("Group Count", fmt.Sprintf("%d", len(ur.Groups)))
 		for _, group := range ur.Groups {
 			d.Field("  Group", appaws.Str(group.GroupName))
 		}
-	}
+	})
 
-	// Attached Policies
 	d.Section("Attached Policies")
-	managedFailed := enrichment.IsFailure(ur.AttachedPoliciesStatus)
-	inlineFailed := enrichment.IsFailure(ur.InlinePoliciesStatus)
-	if managedFailed || inlineFailed {
-		if managedFailed {
-			d.Field("Managed Policies", enrichment.Display(ur.AttachedPoliciesStatus))
-		}
-		if inlineFailed {
-			d.Field("Inline Policies", enrichment.Display(ur.InlinePoliciesStatus))
-		}
+	if d.StatusFields(
+		render.StatusField{Label: "Managed Policies", Status: ur.AttachedPoliciesStatus},
+		render.StatusField{Label: "Inline Policies", Status: ur.InlinePoliciesStatus},
+	) {
 	} else if len(ur.AttachedPolicies) == 0 && len(ur.InlinePolicies) == 0 {
 		d.Field("Policies", render.Empty)
 	} else {

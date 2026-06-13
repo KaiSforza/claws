@@ -120,9 +120,11 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 
 	// Encryption
 	d.Section("Server-Side Encryption")
-	if enrichment.IsFailure(b.EncryptionStatus) {
-		d.Field("Status", enrichment.Display(b.EncryptionStatus))
-	} else if b.EncryptionEnabled {
+	d.StatusBranch(b.EncryptionStatus, b.EncryptionEnabled, func(value string) {
+		d.Field("Status", value)
+	}, func() {
+		d.Field("Status", render.NotConfigured)
+	}, func() {
 		d.Field("Status", "Enabled")
 		d.Field("Algorithm", b.EncryptionAlgorithm)
 		if b.EncryptionKMSKeyID != "" {
@@ -131,15 +133,15 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 		if b.BucketKeyEnabled {
 			d.Field("Bucket Key", "Enabled")
 		}
-	} else {
-		d.Field("Status", render.NotConfigured)
-	}
+	})
 
 	// Public Access Block
 	d.Section("Block Public Access")
-	if enrichment.IsFailure(b.PublicAccessBlockStatus) {
-		d.Field("Status", enrichment.Display(b.PublicAccessBlockStatus))
-	} else if b.PublicAccessBlock != nil {
+	d.StatusBranch(b.PublicAccessBlockStatus, b.PublicAccessBlock != nil, func(value string) {
+		d.Field("Status", value)
+	}, func() {
+		d.Field("Status", render.NotConfigured)
+	}, func() {
 		pab := b.PublicAccessBlock
 		allBlocked := pab.BlockPublicAcls && pab.IgnorePublicAcls && pab.BlockPublicPolicy && pab.RestrictPublicBuckets
 		if allBlocked {
@@ -166,15 +168,13 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 				d.Field("Restrict Public Buckets", "Off")
 			}
 		}
-	} else {
-		d.Field("Status", render.NotConfigured)
-	}
+	})
 
 	// Object Lock
-	if enrichment.IsFailure(b.ObjectLockStatus) {
+	d.StatusBranch(b.ObjectLockStatus, b.ObjectLockEnabled, func(value string) {
 		d.Section("Object Lock")
-		d.Field("Status", enrichment.Display(b.ObjectLockStatus))
-	} else if b.ObjectLockEnabled {
+		d.Field("Status", value)
+	}, func() {}, func() {
 		d.Section("Object Lock")
 		d.Field("Status", "Enabled")
 		if b.ObjectLockMode != "" {
@@ -183,16 +183,16 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 		if b.ObjectLockRetention != "" {
 			d.Field("Default Retention", b.ObjectLockRetention)
 		}
-	}
+	})
 
 	// Lifecycle Rules
-	if enrichment.IsFailure(b.LifecycleStatus) {
+	d.StatusBranch(b.LifecycleStatus, b.LifecycleRulesCount > 0, func(value string) {
 		d.Section("Lifecycle")
-		d.Field("Status", enrichment.Display(b.LifecycleStatus))
-	} else if b.LifecycleRulesCount > 0 {
+		d.Field("Status", value)
+	}, func() {}, func() {
 		d.Section("Lifecycle")
 		d.Field("Rules", fmt.Sprintf("%d lifecycle rules configured", b.LifecycleRulesCount))
-	}
+	})
 
 	// Timestamps (only shown if creation date is available)
 	if !b.CreationDate.IsZero() {
@@ -202,12 +202,14 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 	}
 
 	// Tags
-	if enrichment.IsFailure(b.TagsStatus) {
+	d.StatusBranch(b.TagsStatus, len(b.GetTags()) > 0, func(value string) {
 		d.Section("Tags")
-		d.Field("Status", enrichment.Display(b.TagsStatus))
-	} else {
+		d.Field("Status", value)
+	}, func() {
 		d.Tags(b.GetTags())
-	}
+	}, func() {
+		d.Tags(b.GetTags())
+	})
 
 	return d.String()
 }
@@ -228,15 +230,15 @@ func (r *BucketRenderer) RenderSummary(resource dao.Resource) []render.SummaryFi
 	// Versioning (if fetched)
 	if b.VersioningStatus == enrichment.Configured && b.Versioning != "" {
 		fields = append(fields, render.SummaryField{Label: "Versioning", Value: b.Versioning})
-	} else if b.VersioningStatus == enrichment.AccessDenied || b.VersioningStatus == enrichment.FetchFailed {
-		fields = append(fields, render.SummaryField{Label: "Versioning", Value: enrichment.Display(b.VersioningStatus)})
+	} else if field, ok := render.StatusSummaryField("Versioning", b.VersioningStatus); ok {
+		fields = append(fields, field)
 	}
 
 	// Encryption (if fetched)
 	if b.EncryptionEnabled {
 		fields = append(fields, render.SummaryField{Label: "Encryption", Value: b.EncryptionAlgorithm})
-	} else if b.EncryptionStatus == enrichment.AccessDenied || b.EncryptionStatus == enrichment.FetchFailed {
-		fields = append(fields, render.SummaryField{Label: "Encryption", Value: enrichment.Display(b.EncryptionStatus)})
+	} else if field, ok := render.StatusSummaryField("Encryption", b.EncryptionStatus); ok {
+		fields = append(fields, field)
 	}
 
 	// Public Access Block (if fetched)
@@ -248,15 +250,15 @@ func (r *BucketRenderer) RenderSummary(resource dao.Resource) []render.SummaryFi
 		} else {
 			fields = append(fields, render.SummaryField{Label: "Public Access", Value: "Partial"})
 		}
-	} else if b.PublicAccessBlockStatus == enrichment.AccessDenied || b.PublicAccessBlockStatus == enrichment.FetchFailed {
-		fields = append(fields, render.SummaryField{Label: "Public Access", Value: enrichment.Display(b.PublicAccessBlockStatus)})
+	} else if field, ok := render.StatusSummaryField("Public Access", b.PublicAccessBlockStatus); ok {
+		fields = append(fields, field)
 	}
 
 	// Object Lock (if enabled)
 	if b.ObjectLockEnabled {
 		fields = append(fields, render.SummaryField{Label: "Object Lock", Value: "Enabled"})
-	} else if enrichment.IsFailure(b.ObjectLockStatus) {
-		fields = append(fields, render.SummaryField{Label: "Object Lock", Value: enrichment.Display(b.ObjectLockStatus)})
+	} else if field, ok := render.StatusSummaryField("Object Lock", b.ObjectLockStatus); ok {
+		fields = append(fields, field)
 	}
 
 	// Lifecycle rules count (if fetched)
@@ -265,12 +267,12 @@ func (r *BucketRenderer) RenderSummary(resource dao.Resource) []render.SummaryFi
 			Label: "Lifecycle Rules",
 			Value: fmt.Sprintf("%d", b.LifecycleRulesCount),
 		})
-	} else if enrichment.IsFailure(b.LifecycleStatus) {
-		fields = append(fields, render.SummaryField{Label: "Lifecycle Rules", Value: enrichment.Display(b.LifecycleStatus)})
+	} else if field, ok := render.StatusSummaryField("Lifecycle Rules", b.LifecycleStatus); ok {
+		fields = append(fields, field)
 	}
 
-	if enrichment.IsFailure(b.TagsStatus) {
-		fields = append(fields, render.SummaryField{Label: "Tags", Value: enrichment.Display(b.TagsStatus)})
+	if field, ok := render.StatusSummaryField("Tags", b.TagsStatus); ok {
+		fields = append(fields, field)
 	}
 
 	// Creation info

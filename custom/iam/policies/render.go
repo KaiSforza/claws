@@ -8,7 +8,6 @@ import (
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
-	"github.com/clawscli/claws/internal/enrichment"
 	"github.com/clawscli/claws/internal/render"
 )
 
@@ -131,11 +130,10 @@ func (r *PolicyRenderer) RenderDetail(resource dao.Resource) string {
 		d.Field("Last Updated", pr.Item.UpdateDate.Format(time.RFC3339))
 	}
 
-	// Attached Entities
-	if enrichment.IsFailure(pr.AttachedEntitiesStatus) {
+	d.StatusBranch(pr.AttachedEntitiesStatus, len(pr.AttachedUsers) > 0 || len(pr.AttachedRoles) > 0 || len(pr.AttachedGroups) > 0, func(value string) {
 		d.Section("Attached To")
-		d.Field("Entities", enrichment.Display(pr.AttachedEntitiesStatus))
-	} else if len(pr.AttachedUsers) > 0 || len(pr.AttachedRoles) > 0 || len(pr.AttachedGroups) > 0 {
+		d.Field("Entities", value)
+	}, func() {}, func() {
 		d.Section("Attached To")
 		if len(pr.AttachedUsers) > 0 {
 			d.Field("Users", fmt.Sprintf("%d", len(pr.AttachedUsers)))
@@ -155,16 +153,15 @@ func (r *PolicyRenderer) RenderDetail(resource dao.Resource) string {
 				d.Field("  Group", appaws.Str(group.GroupName))
 			}
 		}
-	}
+	})
 
-	// Policy Document
-	if enrichment.IsFailure(pr.PolicyDocumentStatus) {
+	d.StatusBranch(pr.PolicyDocumentStatus, pr.PolicyDocument != "", func(value string) {
 		d.Section("Policy Document")
-		d.Field("Document", enrichment.Display(pr.PolicyDocumentStatus))
-	} else if pr.PolicyDocument != "" {
+		d.Field("Document", value)
+	}, func() {}, func() {
 		d.Section("Policy Document")
 		d.Line(formatPolicyDoc(pr.PolicyDocument))
-	}
+	})
 
 	// Tags
 	d.Tags(appaws.TagsToMap(pr.Item.Tags))
