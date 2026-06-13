@@ -3,7 +3,7 @@ package webacls
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/wafv2"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2/types"
@@ -14,7 +14,21 @@ import (
 	apperrors "github.com/clawscli/claws/internal/errors"
 )
 
-const cloudFrontWebACLRegion = "us-east-1"
+const (
+	cloudFrontWebACLRegion = "us-east-1"
+	webACLIDParts          = 3
+)
+
+type parsedWebACLID struct {
+	scope types.Scope
+	name  string
+	id    string
+}
+
+type webACLDetailResult struct {
+	resource  *WebACLResource
+	lockToken *string
+}
 
 // WebACLDAO provides data access for WAFv2 Web ACLs
 type WebACLDAO struct {
@@ -51,7 +65,7 @@ func (d *WebACLDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	}
 	cloudfrontResources, err := d.listByScope(ctx, types.ScopeCloudfront)
 	if err != nil {
-		return resources, fmt.Errorf("list cloudfront web acls: %w", err)
+		return resources, apperrors.Wrap(err, "list cloudfront web acls")
 	}
 	resources = append(resources, cloudfrontResources...)
 
@@ -88,23 +102,47 @@ func (d *WebACLDAO) listByScope(ctx context.Context, scope types.Scope) ([]dao.R
 	return resources, nil
 }
 
-// Get returns a specific WAFv2 Web ACL by name
-// Format: scope/name/id (e.g., "REGIONAL/my-acl/abc123")
+// Get returns a specific WAFv2 Web ACL by ID.
+// List-created resource IDs are the raw AWS Web ACL ID. Explicit scope/name/id
+// IDs can be resolved directly without listing.
 func (d *WebACLDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
-	// Parse the composite ID (scope/name/id)
-	// For simplicity, we'll search through both scopes
+	detail, err := d.findWebACLDetail(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return detail.resource, nil
+}
+
+func parseWebACLID(id string) (parsedWebACLID, bool) {
+	parts := strings.Split(id, "/")
+	if len(parts) != webACLIDParts || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return parsedWebACLID{}, false
+	}
+
+	scope := types.Scope(parts[0])
+	if scope != types.ScopeRegional && scope != types.ScopeCloudfront {
+		return parsedWebACLID{}, false
+	}
+
+	return parsedWebACLID{scope: scope, name: parts[1], id: parts[2]}, true
+}
+
+func (d *WebACLDAO) findWebACLDetail(ctx context.Context, id string) (webACLDetailResult, error) {
+	if parsed, ok := parseWebACLID(id); ok {
+		return d.getWebACL(ctx, parsed.scope, parsed.name, parsed.id)
+	}
+
 	var scopeErrs []error
 	for _, scope := range d.scopes(ctx) {
 		resources, err := d.listByScope(ctx, scope)
 		if err != nil {
-			scopeErrs = append(scopeErrs, fmt.Errorf("list %s web acls: %w", scope, err))
+			scopeErrs = append(scopeErrs, apperrors.Wrapf(err, "list %s web acls", scope))
 			continue
 		}
 
 		for _, res := range resources {
 			if acl, ok := res.(*WebACLResource); ok {
 				if acl.GetID() == id || acl.WebACLId() == id {
-					// Found the ACL, get full details
 					return d.getWebACLDetail(ctx, acl)
 				}
 			}
@@ -112,9 +150,9 @@ func (d *WebACLDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if len(scopeErrs) > 0 {
-		return nil, errors.Join(append([]error{fmt.Errorf("web acl %s not found", id)}, scopeErrs...)...)
+		return webACLDetailResult{}, errors.Join(append([]error{errors.New("web acl " + id + " not found")}, scopeErrs...)...)
 	}
-	return nil, fmt.Errorf("web acl %s not found", id)
+	return webACLDetailResult{}, errors.New("web acl " + id + " not found")
 }
 
 func (d *WebACLDAO) scopes(ctx context.Context) []types.Scope {
@@ -124,52 +162,46 @@ func (d *WebACLDAO) scopes(ctx context.Context) []types.Scope {
 	return []types.Scope{types.ScopeRegional}
 }
 
-func (d *WebACLDAO) getWebACLDetail(ctx context.Context, summary *WebACLResource) (*WebACLResource, error) {
+func (d *WebACLDAO) getWebACLDetail(ctx context.Context, summary *WebACLResource) (webACLDetailResult, error) {
+	return d.getWebACL(ctx, summary.Scope, appaws.Str(summary.Summary.Name), appaws.Str(summary.Summary.Id))
+}
+
+func (d *WebACLDAO) getWebACL(ctx context.Context, scope types.Scope, name string, id string) (webACLDetailResult, error) {
 	input := &wafv2.GetWebACLInput{
-		Name:  summary.Summary.Name,
-		Id:    summary.Summary.Id,
-		Scope: summary.Scope,
+		Name:  &name,
+		Id:    &id,
+		Scope: scope,
 	}
 
 	output, err := d.client.GetWebACL(ctx, input)
 	if err != nil {
-		return nil, apperrors.Wrap(err, "get web acl")
+		return webACLDetailResult{}, apperrors.Wrap(err, "get web acl")
 	}
 
-	return NewWebACLResourceFromDetail(output.WebACL, summary.Scope), nil
+	return webACLDetailResult{
+		resource:  NewWebACLResourceFromDetail(output.WebACL, scope),
+		lockToken: output.LockToken,
+	}, nil
 }
 
 // Delete deletes a WAFv2 Web ACL
 func (d *WebACLDAO) Delete(ctx context.Context, id string) error {
-	// First, find the ACL to get its details
-	res, err := d.Get(ctx, id)
+	detail, err := d.findWebACLDetail(ctx, id)
 	if err != nil {
 		return err
 	}
 
-	acl, ok := res.(*WebACLResource)
-	if !ok {
-		return fmt.Errorf("invalid resource type")
-	}
-
-	// Get lock token
-	getInput := &wafv2.GetWebACLInput{
-		Name:  acl.Summary.Name,
-		Id:    acl.Summary.Id,
-		Scope: acl.Scope,
-	}
-
-	getOutput, err := d.client.GetWebACL(ctx, getInput)
-	if err != nil {
-		return apperrors.Wrap(err, "get web acl for lock token")
+	acl := detail.resource
+	if acl == nil || acl.Detail == nil {
+		return errors.New("invalid resource type")
 	}
 
 	// Delete the Web ACL
 	deleteInput := &wafv2.DeleteWebACLInput{
-		Name:      acl.Summary.Name,
-		Id:        acl.Summary.Id,
+		Name:      acl.Detail.Name,
+		Id:        acl.Detail.Id,
 		Scope:     acl.Scope,
-		LockToken: getOutput.LockToken,
+		LockToken: detail.lockToken,
 	}
 
 	_, err = d.client.DeleteWebACL(ctx, deleteInput)
