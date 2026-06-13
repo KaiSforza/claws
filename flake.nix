@@ -20,10 +20,10 @@
         }.${system} or (throw "indexion: unsupported system ${system}");
 
         indexionHash = {
-          "darwin-arm64" = "1gbjfzwy9rgn7n79hj354w1jh2cqc6fvsj1m2zscvg6va6b1hdhl";
+          "darwin-arm64" = "1w3m4px4f5hjr0776rxf3682rizz909zrvsh8i115ig67n1riqq5";
           "darwin-x64" = "0000000000000000000000000000000000000000000000000000";
           "linux-arm64" = "0000000000000000000000000000000000000000000000000000";
-          "linux-x64" = "1pqll5vkb50fygq7ibqdry0lby54r50p17f75fv2s95xqy515c3i";
+          "linux-x64" = "0y7dbkrxyr56kdz326hxpm6i3pljp2z4jpzv1mc5qqwrzqfgybbd";
         }.${indexionPlatform};
 
         # No upstream release binary for this platform yet (e.g. linux-arm64).
@@ -32,9 +32,9 @@
 
         indexion = pkgs.stdenvNoCC.mkDerivation {
           pname = "indexion";
-          version = "0.11.0";
+          version = "0.16.0";
           src = pkgs.fetchzip {
-            url = "https://github.com/trkbt10/indexion/releases/download/v0.11.0/indexion-${indexionPlatform}.tar.gz";
+            url = "https://github.com/trkbt10/indexion/releases/download/v0.16.0/indexion-${indexionPlatform}.tar.gz";
             sha256 = indexionHash;
             stripRoot = true;
           };
