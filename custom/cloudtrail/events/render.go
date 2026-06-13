@@ -7,6 +7,7 @@ import (
 
 	"github.com/clawscli/claws/internal/dao"
 	"github.com/clawscli/claws/internal/render"
+	"github.com/clawscli/claws/internal/sanitize"
 )
 
 // EventRenderer renders CloudTrail events.
@@ -32,7 +33,7 @@ func NewEventRenderer() render.Renderer {
 }
 
 func getEventTime(r dao.Resource) string {
-	event, ok := r.(*EventResource)
+	event, ok := dao.UnwrapResource(r).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -43,7 +44,7 @@ func getEventTime(r dao.Resource) string {
 }
 
 func getEventName(r dao.Resource) string {
-	event, ok := r.(*EventResource)
+	event, ok := dao.UnwrapResource(r).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -51,7 +52,7 @@ func getEventName(r dao.Resource) string {
 }
 
 func getEventSource(r dao.Resource) string {
-	event, ok := r.(*EventResource)
+	event, ok := dao.UnwrapResource(r).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -59,7 +60,7 @@ func getEventSource(r dao.Resource) string {
 }
 
 func getUsername(r dao.Resource) string {
-	event, ok := r.(*EventResource)
+	event, ok := dao.UnwrapResource(r).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -67,7 +68,7 @@ func getUsername(r dao.Resource) string {
 }
 
 func getReadOnly(r dao.Resource) string {
-	event, ok := r.(*EventResource)
+	event, ok := dao.UnwrapResource(r).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -76,7 +77,7 @@ func getReadOnly(r dao.Resource) string {
 
 // RenderDetail renders the detail view for a CloudTrail event.
 func (r *EventRenderer) RenderDetail(resource dao.Resource) string {
-	event, ok := resource.(*EventResource)
+	event, ok := dao.UnwrapResource(resource).(*EventResource)
 	if !ok {
 		return ""
 	}
@@ -100,7 +101,7 @@ func (r *EventRenderer) RenderDetail(resource dao.Resource) string {
 		d.Field("Username", username)
 	}
 	if accessKey := event.AccessKeyId(); accessKey != "" {
-		d.Field("Access Key ID", accessKey)
+		d.Field("Access Key ID", sanitize.SensitiveText(accessKey))
 	}
 
 	// Event Type
@@ -132,7 +133,7 @@ func (r *EventRenderer) RenderDetail(resource dao.Resource) string {
 	// Raw Event (at bottom for readability)
 	if rawEvent := event.CloudTrailEvent(); rawEvent != "" {
 		d.Section("Raw Event")
-		d.Line(prettyJSON(rawEvent))
+		d.Line(sanitize.SensitiveText(prettyJSON(rawEvent)))
 	}
 
 	return d.String()
@@ -149,7 +150,7 @@ func prettyJSON(s string) string {
 
 // RenderSummary renders summary fields for a CloudTrail event.
 func (r *EventRenderer) RenderSummary(resource dao.Resource) []render.SummaryField {
-	event, ok := resource.(*EventResource)
+	event, ok := dao.UnwrapResource(resource).(*EventResource)
 	if !ok {
 		return r.BaseRenderer.RenderSummary(resource)
 	}
