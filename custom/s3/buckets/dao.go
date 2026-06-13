@@ -2,18 +2,24 @@ package buckets
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go"
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	"github.com/clawscli/claws/internal/enrichment"
 	apperrors "github.com/clawscli/claws/internal/errors"
+)
+
+const (
+	encryptionNotConfiguredCode        = "ServerSideEncryptionConfigurationNotFoundError"
+	publicAccessBlockNotConfiguredCode = "NoSuchPublicAccessBlockConfiguration"
+	lifecycleNotConfiguredCode         = "NoSuchLifecycleConfiguration"
+	objectLockNotConfiguredCode        = "ObjectLockConfigurationNotFoundError"
+	tagsNotConfiguredCode              = "NoSuchTagSet"
 )
 
 // BucketDAO provides data access for S3 buckets
@@ -94,7 +100,7 @@ func (d *BucketDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		regionClient = d.client
 	}
 
-	// Fetch extended details (errors are ignored for each API call)
+	// Fetch extended details sequentially; optional fetch failures are recorded as enrichment status.
 	d.fetchVersioning(ctx, regionClient, id, resource)
 	d.fetchEncryption(ctx, regionClient, id, resource)
 	d.fetchPublicAccessBlock(ctx, regionClient, id, resource)
@@ -103,29 +109,6 @@ func (d *BucketDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	d.fetchTags(ctx, regionClient, id, resource)
 
 	return resource, nil
-}
-
-func enrichmentFailureStatus(err error) enrichment.Status {
-	if apperrors.IsAccessDenied(err) {
-		return enrichment.AccessDenied
-	}
-	if isNotConfiguredError(err) {
-		return enrichment.NotConfigured
-	}
-	return enrichment.FetchFailed
-}
-
-func isNotConfiguredError(err error) bool {
-	var apiErr smithy.APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	switch apiErr.ErrorCode() {
-	case "ServerSideEncryptionConfigurationNotFoundError", "NoSuchPublicAccessBlockConfiguration":
-		return true
-	default:
-		return false
-	}
 }
 
 // getRegionClient creates an S3 client for the specified region
@@ -143,7 +126,7 @@ func (d *BucketDAO) fetchVersioning(ctx context.Context, client *s3.Client, buck
 		Bucket: &bucket,
 	})
 	if err != nil {
-		r.VersioningStatus = enrichmentFailureStatus(err)
+		r.VersioningStatus = enrichment.FailureStatus(err)
 		return
 	}
 	if output.Status != "" {
@@ -164,7 +147,7 @@ func (d *BucketDAO) fetchEncryption(ctx context.Context, client *s3.Client, buck
 		Bucket: &bucket,
 	})
 	if err != nil {
-		r.EncryptionStatus = enrichmentFailureStatus(err)
+		r.EncryptionStatus = enrichment.ClassifyError(err, encryptionNotConfiguredCode)
 		return
 	}
 	if output.ServerSideEncryptionConfiguration != nil && len(output.ServerSideEncryptionConfiguration.Rules) > 0 {
@@ -191,7 +174,7 @@ func (d *BucketDAO) fetchPublicAccessBlock(ctx context.Context, client *s3.Clien
 		Bucket: &bucket,
 	})
 	if err != nil {
-		r.PublicAccessBlockStatus = enrichmentFailureStatus(err)
+		r.PublicAccessBlockStatus = enrichment.ClassifyError(err, publicAccessBlockNotConfiguredCode)
 		return
 	}
 	if output.PublicAccessBlockConfiguration != nil {
@@ -214,9 +197,15 @@ func (d *BucketDAO) fetchLifecycle(ctx context.Context, client *s3.Client, bucke
 		Bucket: &bucket,
 	})
 	if err != nil {
+		r.LifecycleStatus = enrichment.ClassifyError(err, lifecycleNotConfiguredCode)
 		return
 	}
 	r.LifecycleRulesCount = len(output.Rules)
+	if len(output.Rules) > 0 {
+		r.LifecycleStatus = enrichment.Configured
+	} else {
+		r.LifecycleStatus = enrichment.NotConfigured
+	}
 }
 
 // fetchObjectLock fetches object lock configuration
@@ -225,10 +214,16 @@ func (d *BucketDAO) fetchObjectLock(ctx context.Context, client *s3.Client, buck
 		Bucket: &bucket,
 	})
 	if err != nil {
+		r.ObjectLockStatus = enrichment.ClassifyError(err, objectLockNotConfiguredCode)
 		return
 	}
 	if output.ObjectLockConfiguration != nil {
 		r.ObjectLockEnabled = output.ObjectLockConfiguration.ObjectLockEnabled == types.ObjectLockEnabledEnabled
+		if r.ObjectLockEnabled {
+			r.ObjectLockStatus = enrichment.Configured
+		} else {
+			r.ObjectLockStatus = enrichment.NotConfigured
+		}
 		if output.ObjectLockConfiguration.Rule != nil && output.ObjectLockConfiguration.Rule.DefaultRetention != nil {
 			retention := output.ObjectLockConfiguration.Rule.DefaultRetention
 			r.ObjectLockMode = string(retention.Mode)
@@ -238,6 +233,8 @@ func (d *BucketDAO) fetchObjectLock(ctx context.Context, client *s3.Client, buck
 				r.ObjectLockRetention = fmt.Sprintf("%d years", *retention.Years)
 			}
 		}
+	} else {
+		r.ObjectLockStatus = enrichment.NotConfigured
 	}
 }
 
@@ -247,6 +244,7 @@ func (d *BucketDAO) fetchTags(ctx context.Context, client *s3.Client, bucket str
 		Bucket: &bucket,
 	})
 	if err != nil {
+		r.TagsStatus = enrichment.ClassifyError(err, tagsNotConfiguredCode)
 		return
 	}
 	tags := make(map[string]string)
@@ -256,6 +254,11 @@ func (d *BucketDAO) fetchTags(ctx context.Context, client *s3.Client, bucket str
 		}
 	}
 	r.Tags = tags
+	if len(tags) > 0 {
+		r.TagsStatus = enrichment.Configured
+	} else {
+		r.TagsStatus = enrichment.NotConfigured
+	}
 }
 
 func (d *BucketDAO) Delete(ctx context.Context, id string) error {
@@ -293,9 +296,12 @@ type BucketResource struct {
 	PublicAccessBlock       *PublicAccessBlockInfo
 	PublicAccessBlockStatus enrichment.Status
 	LifecycleRulesCount     int
+	LifecycleStatus         enrichment.Status
 	ObjectLockEnabled       bool
+	ObjectLockStatus        enrichment.Status
 	ObjectLockMode          string
 	ObjectLockRetention     string
+	TagsStatus              enrichment.Status
 }
 
 // PublicAccessBlockInfo holds public access block settings

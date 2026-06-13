@@ -216,6 +216,29 @@ func TestToolExecuteTailLogsMissingRegion(t *testing.T) {
 	}
 }
 
+func TestToolExecuteTailLogsRejectsInvalidSince(t *testing.T) {
+	executor := &ToolExecutor{registry: nil}
+
+	result := executor.Execute(context.TODO(), &ToolUseContent{
+		ID:   "test-123",
+		Name: "tail_logs",
+		Input: map[string]any{
+			"service":       "lambda",
+			"resource_type": "functions",
+			"region":        "us-east-1",
+			"id":            "my-function",
+			"since":         "yesterday",
+		},
+	})
+
+	if !result.IsError {
+		t.Fatal("expected IsError to be true")
+	}
+	if !strings.Contains(result.Content, "invalid since duration") || !strings.Contains(result.Content, "yesterday") {
+		t.Fatalf("unexpected error content: %q", result.Content)
+	}
+}
+
 func TestToolExecuteRejectsOutOfScopeProfile(t *testing.T) {
 	executor := &ToolExecutor{
 		registry: nil,
@@ -375,6 +398,25 @@ func TestToolExecuteSearchDocsEmptyQuery(t *testing.T) {
 
 	if !strings.Contains(result.Content, "query parameter is required") {
 		t.Errorf("expected query error, got %q", result.Content)
+	}
+}
+
+func TestToolExecuteSearchDocsRejectsNonStringQuery(t *testing.T) {
+	executor := &ToolExecutor{registry: nil}
+
+	result := executor.Execute(context.TODO(), &ToolUseContent{
+		ID:   "test-123",
+		Name: "search_aws_docs",
+		Input: map[string]any{
+			"query": 123,
+		},
+	})
+
+	if !result.IsError {
+		t.Fatal("expected non-string query to fail")
+	}
+	if !strings.Contains(result.Content, "query parameter must be a string") {
+		t.Fatalf("expected explicit query type error, got %q", result.Content)
 	}
 }
 
@@ -588,6 +630,46 @@ func TestToolExecuteAllowsDocsSearchAfterFailedAWSDataTool(t *testing.T) {
 	}
 	if result.Content != "docs: EC2 instance metadata options" {
 		t.Fatalf("unexpected documentation search result: %q", result.Content)
+	}
+}
+
+func TestToolExecuteQueryResourcesReturnsPartialResults(t *testing.T) {
+	reg := registry.New()
+	reg.RegisterCustom("ec2", "instances", registry.Entry{
+		DAOFactory: func(ctx context.Context) (dao.DAO, error) {
+			return &mockDAO{
+				BaseDAO: dao.NewBaseDAO("ec2", "instances"),
+				resources: []dao.Resource{
+					&mockResource{id: "i-123", name: "app-server"},
+				},
+				listErr: errors.New("partial failure for account 123456789012 token=plain-secret"),
+			}, nil
+		},
+	})
+	executor := &ToolExecutor{registry: reg}
+
+	result := executor.Execute(context.TODO(), &ToolUseContent{
+		ID:   "query-123",
+		Name: "query_resources",
+		Input: map[string]any{
+			"service":       "ec2",
+			"resource_type": "instances",
+			"region":        "us-east-1",
+		},
+	})
+
+	if result.IsError {
+		t.Fatalf("expected partial resources to succeed, got %q", result.Content)
+	}
+	for _, want := range []string{"Partial results", "app-server", "i-123"} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("expected %q in partial result, got %q", want, result.Content)
+		}
+	}
+	for _, leaked := range []string{"123456789012", "plain-secret"} {
+		if strings.Contains(result.Content, leaked) {
+			t.Fatalf("expected partial warning to redact %q, got %q", leaked, result.Content)
+		}
 	}
 }
 
@@ -983,7 +1065,7 @@ type mockDAO struct {
 
 func (d *mockDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	if d.listErr != nil {
-		return nil, d.listErr
+		return d.resources, d.listErr
 	}
 	return d.resources, nil
 }

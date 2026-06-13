@@ -2,7 +2,7 @@ package services
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
@@ -118,12 +118,12 @@ func (d *ServiceDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		}
 	}
 
-	return nil, nil
+	return nil, errors.New("service not found: " + id)
 }
 
 // Delete is not supported for services
 func (d *ServiceDAO) Delete(ctx context.Context, id string) error {
-	return fmt.Errorf("delete not supported for services")
+	return errors.New("delete not supported for services")
 }
 
 // Supports returns whether an operation is supported

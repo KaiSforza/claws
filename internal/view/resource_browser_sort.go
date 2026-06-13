@@ -9,6 +9,24 @@ import (
 	"github.com/clawscli/claws/internal/dao"
 )
 
+type numericSuffix struct {
+	suffix     string
+	multiplier float64
+}
+
+var numericSuffixes = []numericSuffix{
+	{suffix: " TiB", multiplier: 1024 * 1024 * 1024 * 1024},
+	{suffix: " GiB", multiplier: 1024 * 1024 * 1024},
+	{suffix: " MiB", multiplier: 1024 * 1024},
+	{suffix: " KiB", multiplier: 1024},
+	{suffix: " TB", multiplier: 1000 * 1000 * 1000 * 1000},
+	{suffix: " GB", multiplier: 1000 * 1000 * 1000},
+	{suffix: " MB", multiplier: 1000 * 1000},
+	{suffix: " KB", multiplier: 1000},
+	{suffix: " B", multiplier: 1},
+	{suffix: "%", multiplier: 1},
+}
+
 // applySorting sorts the filtered resources by the selected column
 func (r *ResourceBrowser) applySorting() {
 	if r.sortColumn < 0 || r.renderer == nil {
@@ -74,25 +92,11 @@ func parseNumeric(s string) (float64, error) {
 		return 0, strconv.ErrSyntax
 	}
 
-	// Handle size suffixes with multipliers
 	multiplier := 1.0
-	suffixes := map[string]float64{
-		" TiB": 1024 * 1024 * 1024 * 1024,
-		" GiB": 1024 * 1024 * 1024,
-		" MiB": 1024 * 1024,
-		" KiB": 1024,
-		" TB":  1000 * 1000 * 1000 * 1000,
-		" GB":  1000 * 1000 * 1000,
-		" MB":  1000 * 1000,
-		" KB":  1000,
-		" B":   1,
-		"%":    1,
-	}
-
-	for suffix, mult := range suffixes {
-		if before, ok := strings.CutSuffix(s, suffix); ok {
+	for _, suffix := range numericSuffixes {
+		if before, ok := strings.CutSuffix(s, suffix.suffix); ok {
 			s = before
-			multiplier = mult
+			multiplier = suffix.multiplier
 			break
 		}
 	}

@@ -26,7 +26,7 @@ var (
 
 // UnknownOperationError creates an error for unknown operations
 func UnknownOperationError(operation string) error {
-	return fmt.Errorf("unknown operation: %s", operation)
+	return apperrors.Wrap(errors.New(operation), "unknown operation")
 }
 
 // InvalidResourceResult returns a standard result for invalid resource type
@@ -162,6 +162,14 @@ var ReadOnlyAllowlist = map[string]bool{
 	"DetectStackDrift": true,
 	// InvokeFunctionDryRun: Validation mode, function is not actually invoked
 	"InvokeFunctionDryRun": true,
+	// ViewParameterValue: Reads and displays a single SSM parameter value only
+	"ViewParameterValue": true,
+	// ViewParameterHistory: Reads and displays SSM parameter history only
+	"ViewParameterHistory": true,
+	// ViewSecretValue: Reads and displays a single Secrets Manager value only
+	"ViewSecretValue": true,
+	// DescribeSecret: Reads and displays Secrets Manager metadata only
+	"DescribeSecret": true,
 }
 
 var ReadOnlyExecAllowlist = map[string]bool{
@@ -275,10 +283,10 @@ func ExecuteWithDAO(ctx context.Context, action Action, resource dao.Resource, s
 		if executor := Global.GetExecutor(service, resourceType); executor != nil {
 			result = executor(ctx, action, resource)
 		} else {
-			result = ActionResult{Success: false, Error: fmt.Errorf("no executor registered for %s/%s", service, resourceType)}
+			result = ActionResult{Success: false, Error: apperrors.Wrap(errors.New(service+"/"+resourceType), "no executor registered for")}
 		}
 	default:
-		result = ActionResult{Success: false, Error: fmt.Errorf("unknown action type: %s", action.Type)}
+		result = ActionResult{Success: false, Error: apperrors.Wrap(errors.New(string(action.Type)), "unknown action type")}
 	}
 
 	if result.Success {
@@ -291,43 +299,10 @@ func ExecuteWithDAO(ctx context.Context, action Action, resource dao.Resource, s
 }
 
 func executeExec(ctx context.Context, action Action, resource dao.Resource) ActionResult {
-	if len(action.Args) > 0 {
-		args, err := ExpandArgs(action.Args, resource)
-		if err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-		if len(args) == 0 || args[0] == "" {
-			return ActionResult{Success: false, Error: ErrEmptyCommand}
-		}
-		args, err = ResolveArgsExecutable(args)
-		if err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-
-		execCmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		execCmd.Stdin = os.Stdin
-		execCmd.Stdout = os.Stdout
-		execCmd.Stderr = os.Stderr
-		if !action.SkipAWSEnv {
-			setAWSEnv(execCmd, aws.GetRegionFromContext(ctx))
-		}
-		if err := execCmd.Run(); err != nil {
-			return ActionResult{Success: false, Error: err}
-		}
-		return ActionResult{Success: true, Message: "Command executed successfully"}
-	}
-
-	cmd, err := ExpandVariables(action.Command, resource)
+	execCmd, err := buildExecCommand(ctx, action.Command, action.Args, resource)
 	if err != nil {
 		return ActionResult{Success: false, Error: err}
 	}
-	if cmd == "" {
-		return ActionResult{Success: false, Error: ErrEmptyCommand}
-	}
-
-	// Execute command through shell to properly handle quoted arguments,
-	// pipes, redirections, and other shell features
-	execCmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
 	execCmd.Stdin = os.Stdin
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
@@ -343,39 +318,82 @@ func executeExec(ctx context.Context, action Action, resource dao.Resource) Acti
 	return ActionResult{Success: true, Message: "Command executed successfully"}
 }
 
+func buildExecCommand(ctx context.Context, command string, args []string, resource dao.Resource) (*exec.Cmd, error) {
+	if len(args) > 0 {
+		return buildArgsCommand(ctx, args, resource)
+	}
+	return buildShellCommand(ctx, command, resource)
+}
+
+func buildArgsCommand(ctx context.Context, args []string, resource dao.Resource) (*exec.Cmd, error) {
+	expanded := append([]string(nil), args...)
+	if resource != nil {
+		var err error
+		expanded, err = ExpandArgs(args, resource)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resolved, err := ResolveArgsExecutable(expanded)
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, resolved[0], resolved[1:]...), nil
+}
+
+func buildShellCommand(ctx context.Context, command string, resource dao.Resource) (*exec.Cmd, error) {
+	expanded := command
+	if resource != nil {
+		var err error
+		expanded, err = ExpandVariables(command, resource)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if expanded == "" {
+		return nil, ErrEmptyCommand
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", expanded), nil
+}
+
 // ExpandArgs replaces variables in command arguments with resource values.
 // Arguments are executed without a shell, so shell metacharacters are preserved as literals.
 func ExpandArgs(args []string, resource dao.Resource) ([]string, error) {
+	vars := resourceVars(resource)
 	expanded := make([]string, len(args))
 	for i, arg := range args {
-		replacements := map[string]string{
-			"${ID}":          resource.GetID(),
-			"${NAME}":        resource.GetName(),
-			"${ARN}":         resource.GetARN(),
-			"${INSTANCE_ID}": resource.GetID(),
-			"${BUCKET}":      resource.GetID(),
-		}
-
-		if p, ok := resource.(PrivateIPProvider); ok {
-			replacements["${PRIVATE_IP}"] = p.PrivateIP()
-		}
-		if p, ok := resource.(ClusterArnProvider); ok {
-			replacements["${CLUSTER}"] = p.ClusterArn()
-		}
-		if p, ok := resource.(ContainerNameProvider); ok {
-			replacements["${CONTAINER}"] = p.FirstContainerName()
-		}
-		if p, ok := resource.(LogGroupNameProvider); ok {
-			replacements["${LOG_GROUP}"] = p.LogGroupName()
-		}
-
 		expandedArg := arg
-		for k, v := range replacements {
+		for k, v := range vars {
 			expandedArg = strings.ReplaceAll(expandedArg, k, v)
 		}
 		expanded[i] = expandedArg
 	}
 	return expanded, nil
+}
+
+func resourceVars(resource dao.Resource) map[string]string {
+	replacements := map[string]string{
+		"${ID}":          resource.GetID(),
+		"${NAME}":        resource.GetName(),
+		"${ARN}":         resource.GetARN(),
+		"${INSTANCE_ID}": resource.GetID(),
+		"${BUCKET}":      resource.GetID(),
+	}
+
+	if p, ok := resource.(PrivateIPProvider); ok {
+		replacements["${PRIVATE_IP}"] = p.PrivateIP()
+	}
+	if p, ok := resource.(ClusterArnProvider); ok {
+		replacements["${CLUSTER}"] = p.ClusterArn()
+	}
+	if p, ok := resource.(ContainerNameProvider); ok {
+		replacements["${CONTAINER}"] = p.FirstContainerName()
+	}
+	if p, ok := resource.(LogGroupNameProvider); ok {
+		replacements["${LOG_GROUP}"] = p.LogGroupName()
+	}
+
+	return replacements
 }
 
 // Optional interfaces for variable expansion in action commands.
@@ -415,37 +433,17 @@ var ErrUnsafeValue = errors.New("variable value contains unsafe characters")
 //
 // Returns an error if any value contains shell metacharacters.
 func ExpandVariables(cmd string, resource dao.Resource) (string, error) {
-	replacements := map[string]string{
-		"${ID}":          resource.GetID(),
-		"${NAME}":        resource.GetName(),
-		"${ARN}":         resource.GetARN(),
-		"${INSTANCE_ID}": resource.GetID(),
-		"${BUCKET}":      resource.GetID(),
-	}
-
-	// Optional variables from interface implementations
-	if p, ok := resource.(PrivateIPProvider); ok {
-		replacements["${PRIVATE_IP}"] = p.PrivateIP()
-	}
-	if p, ok := resource.(ClusterArnProvider); ok {
-		replacements["${CLUSTER}"] = p.ClusterArn()
-	}
-	if p, ok := resource.(ContainerNameProvider); ok {
-		replacements["${CONTAINER}"] = p.FirstContainerName()
-	}
-	if p, ok := resource.(LogGroupNameProvider); ok {
-		replacements["${LOG_GROUP}"] = p.LogGroupName()
-	}
+	vars := resourceVars(resource)
 
 	// Check for unsafe characters in values that will be substituted
-	for k, v := range replacements {
+	for k, v := range vars {
 		if strings.Contains(cmd, k) && containsShellMetachar(v) {
-			return "", fmt.Errorf("%w: %s contains shell metacharacters", ErrUnsafeValue, k)
+			return "", apperrors.Wrapf(ErrUnsafeValue, "%s contains shell metacharacters", k)
 		}
 	}
 
 	result := cmd
-	for k, v := range replacements {
+	for k, v := range vars {
 		result = strings.ReplaceAll(result, k, v)
 	}
 	return result, nil
@@ -457,7 +455,7 @@ func containsShellMetachar(s string) bool {
 	// Check for characters that have special meaning in shell
 	for _, c := range s {
 		switch c {
-		case ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r':
+		case ' ', '\'', '"', '\\', ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r':
 			return true
 		}
 	}

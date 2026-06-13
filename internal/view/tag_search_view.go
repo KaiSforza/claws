@@ -269,23 +269,10 @@ func (v *TagSearchView) parseTagFilters() []tagtypes.TagFilter {
 func (v *TagSearchView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tagSearchLoadedMsg:
-		v.loading = false
-		v.resources = msg.resources
-		v.pageTokens = msg.pageTokens
-		v.hasMorePages = msg.hasMore
-		v.partialErrors = msg.partialErrors
-		v.applyFilter()
-		v.buildTable()
-		return v, nil
+		return v.handleLoaded(msg)
 
 	case tagSearchNextPageMsg:
-		v.isLoadingMore = false
-		v.resources = append(v.resources, msg.resources...)
-		v.pageTokens = msg.pageTokens
-		v.hasMorePages = msg.hasMore
-		v.applyFilter()
-		v.buildTable()
-		return v, nil
+		return v.handleNextPage(msg)
 
 	case tagSearchErrorMsg:
 		v.loading = false
@@ -305,127 +292,153 @@ func (v *TagSearchView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case tea.MouseWheelMsg:
-		delta := 0
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			delta = -3
-		case tea.MouseWheelDown:
-			delta = 3
-		}
-		v.tc.AdjustScrollOffset(delta, len(v.filtered))
-		v.buildTable()
-		return v, nil
+		return v.handleMouseWheel(msg)
 
 	case tea.MouseMotionMsg:
-		if idx := v.getRowAtPosition(msg.Y); idx >= 0 && idx != v.tc.Cursor() {
-			v.tc.SetCursor(idx, len(v.filtered))
-			v.buildTable()
-		}
-		return v, nil
+		return v.handleMouseMotion(msg)
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && len(v.filtered) > 0 {
-			if idx := v.getRowAtPosition(msg.Y); idx >= 0 {
-				v.tc.SetCursor(idx, len(v.filtered))
-				v.buildTable()
-				return v.navigateToResource()
-			}
-		}
-		return v, nil
+		return v.handleMouseClick(msg)
 
 	case tea.KeyPressMsg:
 		if v.filterActive {
-			switch msg.String() {
-			case "esc":
-				v.filterActive = false
-				v.filterInput.Blur()
-				return v, nil
-			case "enter":
-				v.filterActive = false
-				v.filterInput.Blur()
-				v.filterText = v.filterInput.Value()
-				v.applyFilter()
-				v.buildTable()
-				return v, nil
-			default:
-				var cmd tea.Cmd
-				v.filterInput, cmd = v.filterInput.Update(msg)
-				v.filterText = v.filterInput.Value()
-				v.applyFilter()
-				v.buildTable()
-				return v, cmd
-			}
+			return v.handleFilterKey(msg)
 		}
-
-		switch msg.String() {
-		case "/":
-			v.filterActive = true
-			v.filterInput.Focus()
-			return v, textinput.Blink
-
-		case "c":
-			v.filterText = ""
-			v.filterInput.SetValue("")
-			v.applyFilter()
-			v.buildTable()
-			return v, nil
-
-		case "ctrl+r":
-			v.loading = true
-			v.err = nil
-			v.resources = nil
-			v.pageTokens = make(map[string]string)
-			return v, tea.Batch(v.loadResources, v.spinner.Tick)
-
-		case "N":
-			if v.hasMorePages && !v.isLoadingMore && len(v.pageTokens) > 0 {
-				v.isLoadingMore = true
-				return v, v.loadNextPage
-			}
-
-		case "enter", "d":
-			if len(v.filtered) > 0 && v.tc.Cursor() < len(v.filtered) {
-				return v.navigateToResource()
-			}
-
-		case "j", "down":
-			v.tc.SetCursor(v.tc.Cursor()+1, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-
-		case "k", "up":
-			v.tc.SetCursor(v.tc.Cursor()-1, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-
-		case "ctrl+d", "pgdown":
-			v.tc.SetCursor(v.tc.Cursor()+v.tc.TableHeight()/2, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-
-		case "ctrl+u", "pgup":
-			v.tc.SetCursor(v.tc.Cursor()-v.tc.TableHeight()/2, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-
-		case "g", "home":
-			v.tc.SetCursor(0, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-
-		case "G", "end":
-			v.tc.SetCursor(len(v.filtered)-1, len(v.filtered))
-			v.tc.UpdateScrollOffset(len(v.filtered))
-			v.buildTable()
-			return v, nil
-		}
+		return v.handleKeyPress(msg)
 	}
 
+	return v, nil
+}
+
+func (v *TagSearchView) handleLoaded(msg tagSearchLoadedMsg) (tea.Model, tea.Cmd) {
+	v.loading = false
+	v.resources = msg.resources
+	v.pageTokens = msg.pageTokens
+	v.hasMorePages = msg.hasMore
+	v.partialErrors = msg.partialErrors
+	v.applyFilter()
+	v.buildTable()
+	return v, nil
+}
+
+func (v *TagSearchView) handleNextPage(msg tagSearchNextPageMsg) (tea.Model, tea.Cmd) {
+	v.isLoadingMore = false
+	v.resources = append(v.resources, msg.resources...)
+	v.pageTokens = msg.pageTokens
+	v.hasMorePages = msg.hasMore
+	v.applyFilter()
+	v.buildTable()
+	return v, nil
+}
+
+func (v *TagSearchView) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	delta := 0
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		delta = -3
+	case tea.MouseWheelDown:
+		delta = 3
+	}
+	v.tc.AdjustScrollOffset(delta, len(v.filtered))
+	v.buildTable()
+	return v, nil
+}
+
+func (v *TagSearchView) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	if idx := v.getRowAtPosition(msg.Y); idx >= 0 && idx != v.tc.Cursor() {
+		v.tc.SetCursor(idx, len(v.filtered))
+		v.buildTable()
+	}
+	return v, nil
+}
+
+func (v *TagSearchView) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	if msg.Button == tea.MouseLeft && len(v.filtered) > 0 {
+		if idx := v.getRowAtPosition(msg.Y); idx >= 0 {
+			v.tc.SetCursor(idx, len(v.filtered))
+			v.buildTable()
+			return v.navigateToResource()
+		}
+	}
+	return v, nil
+}
+
+func (v *TagSearchView) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		v.filterActive = false
+		v.filterInput.Blur()
+		return v, nil
+	case "enter":
+		v.filterActive = false
+		v.filterInput.Blur()
+		v.filterText = v.filterInput.Value()
+		v.applyFilter()
+		v.buildTable()
+		return v, nil
+	default:
+		var cmd tea.Cmd
+		v.filterInput, cmd = v.filterInput.Update(msg)
+		v.filterText = v.filterInput.Value()
+		v.applyFilter()
+		v.buildTable()
+		return v, cmd
+	}
+}
+
+func (v *TagSearchView) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "/":
+		v.filterActive = true
+		v.filterInput.Focus()
+		return v, textinput.Blink
+	case "c":
+		v.filterText = ""
+		v.filterInput.SetValue("")
+		v.applyFilter()
+		v.buildTable()
+		return v, nil
+	case "ctrl+r":
+		v.loading = true
+		v.err = nil
+		v.resources = nil
+		v.pageTokens = make(map[string]string)
+		return v, tea.Batch(v.loadResources, v.spinner.Tick)
+	case "N":
+		if v.hasMorePages && !v.isLoadingMore && len(v.pageTokens) > 0 {
+			v.isLoadingMore = true
+			return v, v.loadNextPage
+		}
+	case "enter", "d":
+		if len(v.filtered) > 0 && v.tc.Cursor() < len(v.filtered) {
+			return v.navigateToResource()
+		}
+	case "j", "down":
+		return v.moveCursor(1)
+	case "k", "up":
+		return v.moveCursor(-1)
+	case "ctrl+d", "pgdown":
+		return v.moveCursor(v.tc.TableHeight() / 2)
+	case "ctrl+u", "pgup":
+		return v.moveCursor(-v.tc.TableHeight() / 2)
+	case "g", "home":
+		v.tc.SetCursor(0, len(v.filtered))
+		v.tc.UpdateScrollOffset(len(v.filtered))
+		v.buildTable()
+		return v, nil
+	case "G", "end":
+		v.tc.SetCursor(len(v.filtered)-1, len(v.filtered))
+		v.tc.UpdateScrollOffset(len(v.filtered))
+		v.buildTable()
+		return v, nil
+	}
+	return v, nil
+}
+
+func (v *TagSearchView) moveCursor(delta int) (tea.Model, tea.Cmd) {
+	v.tc.SetCursor(v.tc.Cursor()+delta, len(v.filtered))
+	v.tc.UpdateScrollOffset(len(v.filtered))
+	v.buildTable()
 	return v, nil
 }
 

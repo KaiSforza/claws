@@ -2,10 +2,13 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +21,11 @@ const (
 	DefaultMaxSessions = 100
 	sessionDir         = "chat/sessions"
 	currentSessionFile = "chat/current.json"
+)
+
+var (
+	errInvalidSessionID = errors.New("invalid session id")
+	sessionIDPattern    = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$`)
 )
 
 type Session struct {
@@ -91,11 +99,18 @@ func (m *SessionManager) sessionsDir() (string, error) {
 }
 
 func (m *SessionManager) sessionPath(id string) (string, error) {
+	if !isValidSessionID(id) {
+		return "", fmt.Errorf("%w: %q", errInvalidSessionID, id)
+	}
 	dir, err := m.sessionsDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, id+".json"), nil
+	path := filepath.Join(dir, id+".json")
+	if !isPathInDir(path, dir) {
+		return "", fmt.Errorf("%w: path escapes session directory", errInvalidSessionID)
+	}
+	return path, nil
 }
 
 func (m *SessionManager) currentPath() (string, error) {
@@ -140,6 +155,9 @@ func (m *SessionManager) CurrentSession() (*Session, error) {
 		if err := json.Unmarshal(data, &current); err != nil {
 			return nil, err
 		}
+		if current.ID != "" && !isValidSessionID(current.ID) {
+			return nil, fmt.Errorf("%w: %q", errInvalidSessionID, current.ID)
+		}
 		m.currentID = current.ID
 	}
 
@@ -164,6 +182,12 @@ func (m *SessionManager) LoadSession(id string) (*Session, error) {
 	var session Session
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, err
+	}
+	if session.ID != id {
+		return nil, fmt.Errorf("%w: session file id mismatch", errInvalidSessionID)
+	}
+	if !isValidSessionID(session.ID) {
+		return nil, fmt.Errorf("%w: %q", errInvalidSessionID, session.ID)
 	}
 
 	return &session, nil
@@ -211,7 +235,7 @@ func (m *SessionManager) shouldPrune() (bool, error) {
 	// Count only .json files
 	count := 0
 	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" && isValidSessionFilename(entry.Name()) {
 			count++
 		}
 	}
@@ -259,6 +283,12 @@ func (m *SessionManager) saveSession(session *Session) error {
 	if !m.saveEnabled {
 		return nil
 	}
+	if session == nil {
+		return errors.New("session is nil")
+	}
+	if !isValidSessionID(session.ID) {
+		return fmt.Errorf("%w: %q", errInvalidSessionID, session.ID)
+	}
 
 	dir, err := m.sessionsDir()
 	if err != nil {
@@ -286,6 +316,9 @@ func (m *SessionManager) saveSession(session *Session) error {
 }
 
 func (m *SessionManager) saveCurrentID(id string) error {
+	if !isValidSessionID(id) {
+		return fmt.Errorf("%w: %q", errInvalidSessionID, id)
+	}
 	path, err := m.currentPath()
 	if err != nil {
 		return err
@@ -324,7 +357,7 @@ func (m *SessionManager) pruneOldSessions() error {
 	}
 	var files []sessionFile
 	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" && isValidSessionFilename(entry.Name()) {
 			info, err := entry.Info()
 			if err != nil {
 				continue
@@ -357,4 +390,31 @@ func (m *SessionManager) pruneOldSessions() error {
 func generateSessionID() string {
 	now := time.Now()
 	return fmt.Sprintf("%s-%s", now.Format("20060102-150405"), uuid.New().String()[:8])
+}
+
+func isValidSessionID(id string) bool {
+	return sessionIDPattern.MatchString(id)
+}
+
+func isValidSessionFilename(name string) bool {
+	if filepath.Base(name) != name || filepath.Ext(name) != ".json" {
+		return false
+	}
+	return isValidSessionID(name[:len(name)-len(".json")])
+}
+
+func isPathInDir(path, dir string) bool {
+	cleanPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	cleanDir, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != "" && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

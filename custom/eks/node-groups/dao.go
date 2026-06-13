@@ -2,12 +2,13 @@ package nodegroups
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 
+	"github.com/clawscli/claws/custom/eks/eksutil"
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
@@ -33,10 +34,9 @@ func NewNodeGroupDAO(ctx context.Context) (dao.DAO, error) {
 }
 
 func (d *NodeGroupDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	// Get cluster name from context filter
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// List node group names
@@ -80,10 +80,9 @@ func (d *NodeGroupDAO) List(ctx context.Context) ([]dao.Resource, error) {
 }
 
 func (d *NodeGroupDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
-	// Get cluster name from context filter
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	output, err := d.client.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
@@ -95,20 +94,19 @@ func (d *NodeGroupDAO) Get(ctx context.Context, id string) (dao.Resource, error)
 	}
 
 	if output.Nodegroup == nil {
-		return nil, fmt.Errorf("node group not found: %s", id)
+		return nil, errors.New("node group not found: " + id)
 	}
 
 	return NewNodeGroupResource(*output.Nodegroup), nil
 }
 
 func (d *NodeGroupDAO) Delete(ctx context.Context, id string) error {
-	// Get cluster name from context filter
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return err
 	}
 
-	_, err := d.client.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+	_, err = d.client.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
 		ClusterName:   &clusterName,
 		NodegroupName: &id,
 	})

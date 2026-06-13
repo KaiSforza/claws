@@ -1,6 +1,10 @@
 package enrichment
 
-import apperrors "github.com/clawscli/claws/internal/errors"
+import (
+	"slices"
+
+	apperrors "github.com/clawscli/claws/internal/errors"
+)
 
 // Status describes whether optional resource details were fetched and why they
 // may be unavailable.
@@ -15,9 +19,24 @@ const (
 	FetchFailed   Status = "fetch_failed"
 )
 
-func FailureStatus(err error) Status {
+func FailureStatus(err error) Status { return ClassifyError(err) }
+
+func Fetch[T any](call func() (T, error)) (T, Status) {
+	value, err := call()
+	if err != nil {
+		var zero T
+		return zero, FailureStatus(err)
+	}
+	return value, Fetched
+}
+
+func ClassifyError(err error, notConfiguredCodes ...string) Status {
 	if apperrors.IsAccessDenied(err) {
 		return AccessDenied
+	}
+	code := apperrors.GetErrorCode(err)
+	if slices.Contains(notConfiguredCodes, code) {
+		return NotConfigured
 	}
 	return FetchFailed
 }

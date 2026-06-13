@@ -98,9 +98,7 @@ func (r *ServerRenderer) RenderDetail(resource dao.Resource) string {
 	d.Field("Domain", srv.Domain())
 
 	// Protocols
-	if protocols := srv.ProtocolsString(); protocols != "" {
-		d.Field("Protocols", protocols)
-	}
+	d.FieldNonEmpty("Protocols", srv.ProtocolsString())
 
 	// Identity Provider
 	d.Section("Identity Provider")
@@ -125,15 +123,9 @@ func (r *ServerRenderer) RenderDetail(resource dao.Resource) string {
 
 	// Security
 	d.Section("Security")
-	if policy := srv.SecurityPolicyName(); policy != "" {
-		d.Field("Security Policy", policy)
-	}
-	if cert := srv.Certificate(); cert != "" {
-		d.Field("Certificate ARN", cert)
-	}
-	if fingerprint := srv.HostKeyFingerprint(); fingerprint != "" {
-		d.Field("Host Key Fingerprint", fingerprint)
-	}
+	d.FieldNonEmpty("Security Policy", srv.SecurityPolicyName())
+	d.FieldNonEmpty("Certificate ARN", srv.Certificate())
+	d.FieldNonEmpty("Host Key Fingerprint", srv.HostKeyFingerprint())
 
 	// Protocol Details
 	if pd := srv.ProtocolDetails(); pd != nil {

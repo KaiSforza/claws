@@ -2,7 +2,7 @@ package clusters
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -10,7 +10,6 @@ import (
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
-	"github.com/clawscli/claws/internal/log"
 )
 
 // ClusterDAO provides data access for ECS clusters
@@ -52,6 +51,7 @@ func (d *ClusterDAO) List(ctx context.Context) ([]dao.Resource, error) {
 
 	// Describe clusters in batches of 100 (API limit)
 	resources := make([]dao.Resource, 0, len(clusterArns))
+	var errs []error
 	for i := 0; i < len(clusterArns); i += 100 {
 		end := i + 100
 		if end > len(clusterArns) {
@@ -65,7 +65,7 @@ func (d *ClusterDAO) List(ctx context.Context) ([]dao.Resource, error) {
 
 		descOutput, err := d.client.DescribeClusters(ctx, descInput)
 		if err != nil {
-			log.Warn("describe clusters", "error", err)
+			errs = append(errs, apperrors.Wrap(err, "describe clusters"))
 			continue
 		}
 
@@ -74,7 +74,7 @@ func (d *ClusterDAO) List(ctx context.Context) ([]dao.Resource, error) {
 		}
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *ClusterDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
@@ -89,7 +89,7 @@ func (d *ClusterDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if len(output.Clusters) == 0 {
-		return nil, fmt.Errorf("cluster not found: %s", id)
+		return nil, errors.New("cluster not found: " + id)
 	}
 
 	return NewClusterResource(output.Clusters[0]), nil

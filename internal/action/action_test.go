@@ -37,6 +37,124 @@ func TestSimpleExecArgsTreatShellMetacharactersAsLiteral(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommandSharedPath(t *testing.T) {
+	ctx := context.Background()
+	resource := &mockResource{id: "shared-id"}
+
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{
+			name:    "shell command",
+			command: "echo ${ID}",
+		},
+		{
+			name: "args command",
+			args: []string{"/bin/echo", "${ID}"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fromExecuteExec, err := buildExecCommand(ctx, tt.command, tt.args, resource)
+			if err != nil {
+				t.Fatalf("buildExecCommand() returned error: %v", err)
+			}
+
+			preExpandedCommand, preExpandedArgs := expandExecTemplateForTest(t, tt.command, tt.args, resource)
+			fromSimple, err := (&SimpleExec{Command: preExpandedCommand, Args: preExpandedArgs}).command(ctx)
+			if err != nil {
+				t.Fatalf("SimpleExec.command() returned error: %v", err)
+			}
+			fromHeader, err := (&ExecWithHeader{Command: tt.command, Args: tt.args, Resource: resource}).command(ctx)
+			if err != nil {
+				t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+			}
+
+			setAWSEnv(fromExecuteExec, "us-east-1")
+			setAWSEnv(fromSimple, "us-east-1")
+			setAWSEnv(fromHeader, "us-east-1")
+			assertSameCommand(t, fromExecuteExec, fromSimple)
+			assertSameCommand(t, fromExecuteExec, fromHeader)
+		})
+	}
+}
+
+func TestExecWithHeaderCommandExpandsResourceVariables(t *testing.T) {
+	ctx := context.Background()
+	resource := &mockResource{id: "interactive-id"}
+
+	t.Run("command string", func(t *testing.T) {
+		cmd, err := (&ExecWithHeader{Command: "echo ${ID}", Resource: resource}).command(ctx)
+		if err != nil {
+			t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+		}
+		assertSameStrings(t, "Args", cmd.Args, []string{"/bin/sh", "-c", "echo interactive-id"})
+	})
+
+	t.Run("args", func(t *testing.T) {
+		cmd, err := (&ExecWithHeader{Args: []string{"/bin/echo", "${ID}"}, Resource: resource}).command(ctx)
+		if err != nil {
+			t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+		}
+		assertSameStrings(t, "Args", cmd.Args, []string{"/bin/echo", "interactive-id"})
+	})
+}
+
+func TestBuildExecCommandSmoke(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd, err := buildExecCommand(context.Background(), "", []string{"/bin/echo", "hello"}, nil)
+	if err != nil {
+		t.Fatalf("buildExecCommand() returned error: %v", err)
+	}
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if got, want := stdout.String(), "hello\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func expandExecTemplateForTest(t *testing.T, command string, args []string, resource dao.Resource) (string, []string) {
+	t.Helper()
+	if len(args) > 0 {
+		expanded, err := ExpandArgs(args, resource)
+		if err != nil {
+			t.Fatalf("ExpandArgs() returned error: %v", err)
+		}
+		return "", expanded
+	}
+	expanded, err := ExpandVariables(command, resource)
+	if err != nil {
+		t.Fatalf("ExpandVariables() returned error: %v", err)
+	}
+	return expanded, nil
+}
+
+func assertSameCommand(t *testing.T, want, got *exec.Cmd) {
+	t.Helper()
+	if got.Path != want.Path {
+		t.Fatalf("Path = %q, want %q", got.Path, want.Path)
+	}
+	assertSameStrings(t, "Args", got.Args, want.Args)
+	assertSameStrings(t, "Env", got.Env, want.Env)
+}
+
+func assertSameStrings(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s len = %d, want %d", label, len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%d] = %q, want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
 func TestResolveArgsExecutableReturnsCopy(t *testing.T) {
 	original := []string{"/bin/echo", "hello"}
 	resolved, err := ResolveArgsExecutable(original)
@@ -83,6 +201,86 @@ type mockResourceWithPrivateIP struct {
 }
 
 func (m *mockResourceWithPrivateIP) PrivateIP() string { return m.privateIP }
+
+type mockResourceWithExecVars struct {
+	mockResource
+	clusterArn    string
+	containerName string
+	logGroupName  string
+}
+
+func (m *mockResourceWithExecVars) ClusterArn() string         { return m.clusterArn }
+func (m *mockResourceWithExecVars) FirstContainerName() string { return m.containerName }
+func (m *mockResourceWithExecVars) LogGroupName() string       { return m.logGroupName }
+
+func TestProductionExecTemplatesExpand(t *testing.T) {
+	resource := &mockResourceWithExecVars{
+		mockResource: mockResource{
+			id:  "/prod/db/password",
+			arn: "arn:aws:ecs:us-east-1:123456789012:task/prod/abc123",
+		},
+		clusterArn:    "arn:aws:ecs:us-east-1:123456789012:cluster/prod",
+		containerName: "app",
+	}
+
+	args, err := ExpandArgs([]string{"aws", "ssm", "start-session", "--target", "${ID}"}, resource)
+	if err != nil {
+		t.Fatalf("ExpandArgs() returned error: %v", err)
+	}
+	wantArgs := []string{"aws", "ssm", "start-session", "--target", "/prod/db/password"}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("ExpandArgs() len = %d, want %d", len(args), len(wantArgs))
+	}
+	for i := range wantArgs {
+		if args[i] != wantArgs[i] {
+			t.Fatalf("ExpandArgs()[%d] = %q, want %q", i, args[i], wantArgs[i])
+		}
+	}
+
+	tests := []struct {
+		name     string
+		cmd      string
+		expected string
+	}{
+		{
+			name:     "ecs task exec",
+			cmd:      `aws ecs execute-command --cluster "${CLUSTER}" --task "${ARN}" --container "${CONTAINER}" --interactive --command "/bin/sh"`,
+			expected: `aws ecs execute-command --cluster "arn:aws:ecs:us-east-1:123456789012:cluster/prod" --task "arn:aws:ecs:us-east-1:123456789012:task/prod/abc123" --container "app" --interactive --command "/bin/sh"`,
+		},
+		{
+			name:     "ssm view value",
+			cmd:      `aws ssm get-parameter --name "${ID}" --with-decryption --query 'Parameter.Value' --output text | less -R`,
+			expected: `aws ssm get-parameter --name "/prod/db/password" --with-decryption --query 'Parameter.Value' --output text | less -R`,
+		},
+		{
+			name:     "ssm view history",
+			cmd:      `aws ssm get-parameter-history --name "${ID}" --with-decryption | less -R`,
+			expected: `aws ssm get-parameter-history --name "/prod/db/password" --with-decryption | less -R`,
+		},
+		{
+			name:     "secrets view value",
+			cmd:      `aws secretsmanager get-secret-value --secret-id "${ID}" --query 'SecretString' --output text | less`,
+			expected: `aws secretsmanager get-secret-value --secret-id "/prod/db/password" --query 'SecretString' --output text | less`,
+		},
+		{
+			name:     "secrets describe",
+			cmd:      `aws secretsmanager describe-secret --secret-id "${ID}" | less -R`,
+			expected: `aws secretsmanager describe-secret --secret-id "/prod/db/password" | less -R`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ExpandVariables(tt.cmd, resource)
+			if err != nil {
+				t.Fatalf("ExpandVariables() returned error: %v", err)
+			}
+			if result != tt.expected {
+				t.Fatalf("ExpandVariables() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
 
 func TestExpandVariables(t *testing.T) {
 	resource := &mockResource{
@@ -173,6 +371,26 @@ func TestExpandVariables_WithPrivateIP(t *testing.T) {
 	}
 }
 
+func TestExpandVariables_WithOptionalExecVariables(t *testing.T) {
+	resource := &mockResourceWithExecVars{
+		mockResource:  mockResource{id: "task-id", arn: "task-arn"},
+		clusterArn:    "cluster-arn",
+		containerName: "app",
+		logGroupName:  "/aws/ecs/app",
+	}
+
+	cmd := "aws logs tail ${LOG_GROUP} --cluster ${CLUSTER} --task ${ARN} --container ${CONTAINER}"
+	expected := "aws logs tail /aws/ecs/app --cluster cluster-arn --task task-arn --container app"
+
+	result, err := ExpandVariables(cmd, resource)
+	if err != nil {
+		t.Fatalf("ExpandVariables(%q) returned unexpected error: %v", cmd, err)
+	}
+	if result != expected {
+		t.Fatalf("ExpandVariables(%q) = %q, want %q", cmd, result, expected)
+	}
+}
+
 func TestExpandVariables_UnsafeCharacters(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -217,6 +435,30 @@ func TestExpandVariables_UnsafeCharacters(t *testing.T) {
 			wantErr:  true,
 		},
 		{
+			name:     "space in ID",
+			resource: &mockResource{id: "test value"},
+			cmd:      "echo ${ID}",
+			wantErr:  true,
+		},
+		{
+			name:     "single quote in ARN",
+			resource: &mockResource{arn: "arn'bad"},
+			cmd:      "echo ${ARN}",
+			wantErr:  true,
+		},
+		{
+			name:     "double quote in ID",
+			resource: &mockResource{id: `test"bad`},
+			cmd:      "echo ${ID}",
+			wantErr:  true,
+		},
+		{
+			name:     "backslash in ID",
+			resource: &mockResource{id: `test\bad`},
+			cmd:      "echo ${ID}",
+			wantErr:  true,
+		},
+		{
 			name:     "safe characters",
 			resource: &mockResource{id: "i-1234567890abcdef0", name: "my-instance_01"},
 			cmd:      "echo ${ID} ${NAME}",
@@ -233,11 +475,56 @@ func TestExpandVariables_UnsafeCharacters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ExpandVariables(tt.cmd, tt.resource)
-			if tt.wantErr && err == nil {
-				t.Error("ExpandVariables() expected error but got nil")
+			if tt.wantErr && !errors.Is(err, ErrUnsafeValue) {
+				t.Errorf("ExpandVariables() error = %v, want ErrUnsafeValue", err)
 			}
 			if !tt.wantErr && err != nil {
 				t.Errorf("ExpandVariables() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestExpandVariables_UnsafeOptionalExecVariables(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource *mockResourceWithExecVars
+		cmd      string
+	}{
+		{
+			name: "unsafe cluster",
+			resource: &mockResourceWithExecVars{
+				mockResource:  mockResource{id: "safe", arn: "safe-arn"},
+				clusterArn:    "bad cluster",
+				containerName: "app",
+			},
+			cmd: "echo ${CLUSTER}",
+		},
+		{
+			name: "unsafe container",
+			resource: &mockResourceWithExecVars{
+				mockResource:  mockResource{id: "safe", arn: "safe-arn"},
+				clusterArn:    "cluster-arn",
+				containerName: `bad\container`,
+			},
+			cmd: "echo ${CONTAINER}",
+		},
+		{
+			name: "unsafe arn",
+			resource: &mockResourceWithExecVars{
+				mockResource:  mockResource{id: "safe", arn: `bad"arn`},
+				clusterArn:    "cluster-arn",
+				containerName: "app",
+			},
+			cmd: "echo ${ARN}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ExpandVariables(tt.cmd, tt.resource)
+			if !errors.Is(err, ErrUnsafeValue) {
+				t.Fatalf("ExpandVariables() error = %v, want ErrUnsafeValue", err)
 			}
 		})
 	}
@@ -251,6 +538,10 @@ func TestContainsShellMetachar(t *testing.T) {
 		{"hello", false},
 		{"hello-world_123", false},
 		{"arn:aws:s3:::bucket", false},
+		{"hello world", true},
+		{"test'quote", true},
+		{`test"quote`, true},
+		{`test\path`, true},
 		{"test;rm", true},
 		{"test|cat", true},
 		{"test&bg", true},

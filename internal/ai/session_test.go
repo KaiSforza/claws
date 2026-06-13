@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +205,67 @@ func TestSessionPersistenceDoesNotContainRedactedSecrets(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "[REDACTED]") {
 		t.Fatalf("session file should contain redaction marker: %s", string(data))
+	}
+}
+
+func TestSessionManagerRejectsInvalidSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	sm := NewSessionManager(10, true)
+	for _, id := range []string{"", "../current", "20240101-010101-../../evil", "20240101-010101-ABCDEF12", "2024-01-01-abcdef12"} {
+		t.Run(id, func(t *testing.T) {
+			_, err := sm.LoadSession(id)
+			if !errors.Is(err, errInvalidSessionID) {
+				t.Fatalf("LoadSession(%q) error = %v, want errInvalidSessionID", id, err)
+			}
+		})
+	}
+}
+
+func TestSessionManagerRejectsInvalidCurrentSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	currentPath := filepath.Join(tmpDir, ".config", "claws", "chat", "current.json")
+	if err := os.MkdirAll(filepath.Dir(currentPath), 0o700); err != nil {
+		t.Fatalf("mkdir current dir: %v", err)
+	}
+	if err := os.WriteFile(currentPath, []byte(`{"id":"../sessions/evil"}`), 0o600); err != nil {
+		t.Fatalf("write current session: %v", err)
+	}
+
+	sm := NewSessionManager(10, true)
+	_, err := sm.CurrentSession()
+	if !errors.Is(err, errInvalidSessionID) {
+		t.Fatalf("CurrentSession() error = %v, want errInvalidSessionID", err)
+	}
+}
+
+func TestSessionManagerIgnoresInvalidSessionFilenamesForPruning(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	sm := NewSessionManager(1, true)
+	sessionsDir, err := sm.sessionsDir()
+	if err != nil {
+		t.Fatalf("sessionsDir: %v", err)
+	}
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatalf("mkdir sessions dir: %v", err)
+	}
+	for _, name := range []string{"invalid.json", "also-invalid.json"} {
+		if err := os.WriteFile(filepath.Join(sessionsDir, name), []byte(`{"id":"invalid"}`), 0o600); err != nil {
+			t.Fatalf("write invalid session file %s: %v", name, err)
+		}
+	}
+
+	should, err := sm.shouldPrune()
+	if err != nil {
+		t.Fatalf("shouldPrune() error = %v", err)
+	}
+	if should {
+		t.Fatal("invalid session filenames should not trigger pruning")
 	}
 }
 

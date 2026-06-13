@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,6 +20,9 @@ type MockView struct {
 	status      string
 	hasInput    bool
 	escReceived bool
+	lastKey     string
+	lastMouse   tea.MouseClickMsg
+	mouseSeen   bool
 }
 
 func (m *MockView) Init() tea.Cmd                     { return nil }
@@ -33,9 +37,16 @@ func (m *MockView) StatusLine() string {
 }
 func (m *MockView) HasActiveInput() bool { return m.hasInput }
 func (m *MockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "esc" {
-		m.escReceived = true
-		m.hasInput = false // Close input on esc
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+		m.lastKey = keyMsg.String()
+		if keyMsg.String() == "esc" {
+			m.escReceived = true
+			m.hasInput = false // Close input on esc
+		}
+	}
+	if mouseMsg, ok := msg.(tea.MouseClickMsg); ok {
+		m.lastMouse = mouseMsg
+		m.mouseSeen = true
 	}
 	return m, nil
 }
@@ -515,6 +526,58 @@ func TestCommandModeActivation(t *testing.T) {
 	}
 }
 
+func TestUnhandledKeyDelegatesToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	app.Update(tea.KeyPressMsg{Code: 0, Text: "j"})
+
+	if dashboard.lastKey != "j" {
+		t.Errorf("Expected j key to reach current view, got %q", dashboard.lastKey)
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView unchanged, got %T", app.currentView)
+	}
+	if app.commandMode {
+		t.Error("Expected commandMode to remain false")
+	}
+	if app.modal != nil {
+		t.Error("Expected no modal for unhandled key")
+	}
+}
+
+func TestMouseClickDelegatesToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	click := tea.MouseClickMsg{X: 12, Y: 4, Button: tea.MouseLeft}
+	app.Update(click)
+
+	if !dashboard.mouseSeen {
+		t.Fatal("Expected mouse click to reach current view")
+	}
+	if dashboard.lastMouse != click {
+		t.Fatalf("Expected mouse click %v, got %v", click, dashboard.lastMouse)
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView unchanged, got %T", app.currentView)
+	}
+}
+
+func TestMouseBackDoesNotDelegateToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	app.Update(tea.MouseClickMsg{X: 12, Y: 4, Button: tea.MouseBackward})
+
+	if dashboard.mouseSeen {
+		t.Fatal("Expected mouse back button to be handled by app navigation")
+	}
+}
+
 func TestModalClosesWithKey(t *testing.T) {
 	tests := []struct {
 		name string
@@ -622,7 +685,9 @@ func TestShowModalFromNormalState(t *testing.T) {
 
 func TestModalStackClearedOnRegionChange(t *testing.T) {
 	app := newTestApp(t)
-	app.currentView = &MockView{name: "Dashboard"}
+	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
+	app.currentView = dashboard
+	app.viewStack = []view.View{&MockView{name: "ServiceBrowser"}}
 
 	parentModal := &view.Modal{Content: &MockView{name: "ParentModal"}}
 	childModal := &view.Modal{Content: &MockView{name: "ChildModal"}}
@@ -637,11 +702,20 @@ func TestModalStackClearedOnRegionChange(t *testing.T) {
 	if len(app.modalStack) != 0 {
 		t.Errorf("Expected empty modalStack after RegionChangedMsg, got %d", len(app.modalStack))
 	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView to stay on Dashboard, got %T", app.currentView)
+	}
+	if len(app.viewStack) != 1 {
+		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
 }
 
 func TestModalStackClearedOnProfileChange(t *testing.T) {
 	app := newTestApp(t)
-	app.currentView = &MockView{name: "Dashboard"}
+	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
+	app.currentView = dashboard
+	app.viewStack = []view.View{&MockView{name: "ServiceBrowser"}}
+	app.profileRefreshError = errors.New("previous refresh failed")
 
 	parentModal := &view.Modal{Content: &MockView{name: "ParentModal"}}
 	childModal := &view.Modal{Content: &MockView{name: "ChildModal"}}
@@ -655,6 +729,18 @@ func TestModalStackClearedOnProfileChange(t *testing.T) {
 	}
 	if len(app.modalStack) != 0 {
 		t.Errorf("Expected empty modalStack after ProfilesChangedMsg, got %d", len(app.modalStack))
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView to stay on Dashboard, got %T", app.currentView)
+	}
+	if len(app.viewStack) != 1 {
+		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
+	if app.profileRefreshError != nil {
+		t.Errorf("Expected profileRefreshError cleared, got %v", app.profileRefreshError)
 	}
 }
 
@@ -685,6 +771,7 @@ func TestWarningScreenDismissal(t *testing.T) {
 
 func TestProfileChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	app := newTestApp(t)
+	app.profileRefreshError = errors.New("previous refresh failed")
 
 	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
 	resourceBrowser := &RefreshableMockView{MockView: MockView{name: "ResourceBrowser"}, canRefresh: true}
@@ -699,6 +786,15 @@ func TestProfileChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	}
 	if len(app.viewStack) != 1 {
 		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard {
+		t.Error("Expected viewStack to keep Dashboard entry")
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
+	if app.profileRefreshError != nil {
+		t.Errorf("Expected profileRefreshError cleared, got %v", app.profileRefreshError)
 	}
 }
 
@@ -718,6 +814,9 @@ func TestRegionChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	}
 	if len(app.viewStack) != 1 {
 		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard {
+		t.Error("Expected viewStack to keep Dashboard entry")
 	}
 }
 
@@ -739,6 +838,12 @@ func TestProfileChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
 	if len(app.viewStack) != 2 {
 		t.Errorf("Expected viewStack length 2, got %d", len(app.viewStack))
 	}
+	if app.viewStack[0] != dashboard || app.viewStack[1] != resourceBrowser {
+		t.Error("Expected viewStack entries unchanged")
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
 }
 
 func TestRegionChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
@@ -758,6 +863,9 @@ func TestRegionChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
 	}
 	if len(app.viewStack) != 2 {
 		t.Errorf("Expected viewStack length 2, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard || app.viewStack[1] != resourceBrowser {
+		t.Error("Expected viewStack entries unchanged")
 	}
 }
 

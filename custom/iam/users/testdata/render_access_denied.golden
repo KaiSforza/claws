@@ -1,0 +1,36 @@
+[1;38;5;170mIAM User: my-user[m
+
+
+                 
+[1;38;5;33mBasic Information[m
+[38;5;247mUser Name:[m                      [38;5;252mmy-user[m
+[38;5;247mUser ID:[m                        [38;5;252mAIDAEXAMPLE12345[m
+[38;5;247mPath:[m                           [38;5;252m/[m
+[38;5;247mARN:[m                            [38;5;252marn:aws:iam::123456789012:user/my-user[m
+
+        
+[1;38;5;33mActivity[m
+[38;5;247mPassword Last Used:[m             [38;5;252mNever (no console access or never used)[m
+
+           
+[1;38;5;33mAccess Keys[m
+[38;5;247mAccess Keys:[m                    [38;5;252mUnknown (access denied)[m
+
+   
+[1;38;5;33mMFA[m
+[38;5;247mMFA Status:[m                     [38;5;252mUnknown (access denied)[m
+
+      
+[1;38;5;33mGroups[m
+[38;5;247mGroups:[m                         [38;5;252mUnknown (access denied)[m
+
+                 
+[1;38;5;33mAttached Policies[m
+[38;5;247mManaged Policies:[m               [38;5;252mUnknown (access denied)[m
+[38;5;247mInline Policies:[m                [38;5;252mUnknown (access denied)[m
+
+---SUMMARY---
+User Name=my-user
+User ID=AIDAEXAMPLE12345
+Path=/
+ARN=arn:aws:iam::123456789012:user/my-user

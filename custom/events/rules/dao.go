@@ -2,6 +2,7 @@ package rules
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
@@ -40,6 +41,7 @@ func (d *RuleDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	}
 
 	var resources []dao.Resource
+	var errs []error
 
 	// List rules for each event bus
 	for _, bus := range busOutput.EventBuses {
@@ -49,7 +51,7 @@ func (d *RuleDAO) List(ctx context.Context) ([]dao.Resource, error) {
 
 		output, err := d.client.ListRules(ctx, input)
 		if err != nil {
-			log.Warn("failed to list rules for event bus", "eventBus", appaws.Str(bus.Name), "error", err)
+			errs = append(errs, apperrors.Wrapf(err, "list rules for event bus %s", appaws.Str(bus.Name)))
 			continue
 		}
 
@@ -58,7 +60,7 @@ func (d *RuleDAO) List(ctx context.Context) ([]dao.Resource, error) {
 		}
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *RuleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
@@ -100,6 +102,8 @@ func (d *RuleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 	if targetsOutput, err := d.client.ListTargetsByRule(ctx, targetsInput); err == nil {
 		res.Targets = targetsOutput.Targets
+	} else {
+		log.Warn("failed to list rule targets", "rule", id, "error", err)
 	}
 
 	return res, nil
@@ -115,7 +119,10 @@ func (d *RuleDAO) Delete(ctx context.Context, id string) error {
 		targetsInput.EventBusName = &eventBusName
 	}
 	targetsOutput, err := d.client.ListTargetsByRule(ctx, targetsInput)
-	if err == nil && len(targetsOutput.Targets) > 0 {
+	if err != nil {
+		return apperrors.Wrapf(err, "list targets for rule %s", id)
+	}
+	if len(targetsOutput.Targets) > 0 {
 		var targetIds []string
 		for _, target := range targetsOutput.Targets {
 			if target.Id != nil {

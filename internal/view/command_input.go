@@ -440,137 +440,28 @@ func (c *CommandInput) SetDiffProvider(provider DiffCompletionProvider) {
 func (c *CommandInput) executeCommand() (tea.Cmd, *NavigateMsg) {
 	input := strings.TrimSpace(c.textInput.Value())
 
-	// Empty input or home - go to service browser (new default home)
-	if input == "" || input == "home" {
-		browser := NewServiceBrowser(c.ctx, c.registry)
-		return nil, &NavigateMsg{View: browser, ClearStack: false}
+	if cmd, nav, ok := c.executeStaticCommand(input); ok {
+		return cmd, nav
 	}
 
-	// Handle pulse command - go to dashboard
-	if input == "pulse" {
-		dashboard := NewDashboardView(c.ctx, c.registry)
-		return nil, &NavigateMsg{View: dashboard, ClearStack: false}
+	if cmd, ok := c.executeSortCommand(input); ok {
+		return cmd, nil
 	}
 
-	// Handle quit command
-	if input == "q" || input == "quit" {
-		return tea.Quit, nil
+	if cmd, ok := c.executeLoginCommand(input); ok {
+		return cmd, nil
 	}
 
-	// Handle clear-history command - clear navigation stack
-	if input == "clear-history" {
-		return func() tea.Msg {
-			return ClearHistoryMsg{}
-		}, nil
+	if cmd, nav, ok := c.executeFilterCommand(input); ok {
+		return cmd, nav
 	}
 
-	// Handle dashboard command - explicitly open dashboard
-	if input == "dashboard" {
-		dashboard := NewDashboardView(c.ctx, c.registry)
-		return nil, &NavigateMsg{View: dashboard, ClearStack: false}
+	if cmd, ok := c.executeDiffCommand(input); ok {
+		return cmd, nil
 	}
 
-	// Handle services/browse command - go to service browser
-	if input == "services" || input == "browse" {
-		browser := NewServiceBrowser(c.ctx, c.registry)
-		return nil, &NavigateMsg{View: browser, ClearStack: false}
-	}
-
-	// Handle settings command - show settings modal
-	if input == "settings" {
-		return func() tea.Msg {
-			return ShowModalMsg{
-				Modal: &Modal{
-					Content: NewSettingsView(c.ctx),
-					Width:   ModalWidthSettings,
-				},
-			}
-		}, nil
-	}
-
-	// Handle sort command: :sort (clear) or :sort <column> (sort by column)
-	if input == "sort" {
-		return func() tea.Msg {
-			return SortMsg{Column: "", Ascending: true}
-		}, nil
-	}
-	if suffix, ok := strings.CutPrefix(input, "sort "); ok {
-		return c.parseSortArgs(suffix), nil
-	}
-
-	// Handle login command: :login (default) or :login <profile>
-	if input == "login" {
-		return c.executeLogin("claws-login"), nil
-	}
-	if suffix, ok := strings.CutPrefix(input, "login "); ok {
-		profileName := strings.TrimSpace(suffix)
-		if profileName == "" {
-			return c.executeLogin("claws-login"), nil
-		}
-		if !config.IsValidProfileName(profileName) {
-			return func() tea.Msg {
-				return ErrorMsg{Err: fmt.Errorf("invalid profile name: %q", profileName)}
-			}, nil
-		}
-		return c.executeLogin(profileName), nil
-	}
-
-	// Handle tag command: :tag (clear) or :tag <filter> (filter by tag)
-	if input == "tag" {
-		return func() tea.Msg {
-			return TagFilterMsg{Filter: ""}
-		}, nil
-	}
-	if tagFilter, ok := strings.CutPrefix(input, "tag "); ok {
-		return func() tea.Msg {
-			return TagFilterMsg{Filter: tagFilter}
-		}, nil
-	}
-
-	// Handle tags command: :tags (all) or :tags <filter> (cross-service tag search)
-	if input == "tags" {
-		browser := NewTagSearchView(c.ctx, c.registry, "")
-		return nil, &NavigateMsg{View: browser}
-	}
-	if tagFilter, ok := strings.CutPrefix(input, "tags "); ok {
-		browser := NewTagSearchView(c.ctx, c.registry, tagFilter)
-		return nil, &NavigateMsg{View: browser}
-	}
-
-	// Handle diff command: :diff <name> or :diff <name1> <name2>
-	if suffix, ok := strings.CutPrefix(input, "diff "); ok {
-		parts := strings.Fields(suffix)
-		if len(parts) == 1 {
-			return func() tea.Msg {
-				return DiffMsg{LeftID: "", RightID: parts[0]}
-			}, nil
-		} else if len(parts) >= 2 {
-			return func() tea.Msg {
-				return DiffMsg{LeftID: parts[0], RightID: parts[1]}
-			}, nil
-		}
-	}
-
-	if suffix, ok := strings.CutPrefix(input, "theme "); ok {
-		themeName := strings.TrimSpace(suffix)
-		if themeName != "" {
-			return func() tea.Msg {
-				return ThemeChangeMsg{Name: themeName}
-			}, nil
-		}
-	}
-
-	if suffix, ok := strings.CutPrefix(input, "autosave "); ok {
-		switch strings.TrimSpace(suffix) {
-		case "on":
-			return func() tea.Msg {
-				return PersistenceChangeMsg{Enabled: true}
-			}, nil
-		case "off":
-			return func() tea.Msg {
-				return PersistenceChangeMsg{Enabled: false}
-			}, nil
-		}
+	if cmd, ok := c.executePreferenceCommand(input); ok {
+		return cmd, nil
 	}
 
 	// Try ParseServiceResource first (handles aliases, defaults, validation)
@@ -592,6 +483,106 @@ func (c *CommandInput) executeCommand() (tea.Cmd, *NavigateMsg) {
 	return func() tea.Msg {
 		return ErrorMsg{Err: fmt.Errorf("unknown command: %s", input)}
 	}, nil
+}
+
+func (c *CommandInput) executeStaticCommand(input string) (tea.Cmd, *NavigateMsg, bool) {
+	switch input {
+	case "", "home", "services", "browse":
+		browser := NewServiceBrowser(c.ctx, c.registry)
+		return nil, &NavigateMsg{View: browser, ClearStack: false}, true
+	case "pulse", "dashboard":
+		dashboard := NewDashboardView(c.ctx, c.registry)
+		return nil, &NavigateMsg{View: dashboard, ClearStack: false}, true
+	case "q", "quit":
+		return tea.Quit, nil, true
+	case "clear-history":
+		return func() tea.Msg { return ClearHistoryMsg{} }, nil, true
+	case "settings":
+		return func() tea.Msg {
+			return ShowModalMsg{Modal: &Modal{Content: NewSettingsView(c.ctx), Width: ModalWidthSettings}}
+		}, nil, true
+	default:
+		return nil, nil, false
+	}
+}
+
+func (c *CommandInput) executeSortCommand(input string) (tea.Cmd, bool) {
+	if input == "sort" {
+		return func() tea.Msg { return SortMsg{Column: "", Ascending: true} }, true
+	}
+	if suffix, ok := strings.CutPrefix(input, "sort "); ok {
+		return c.parseSortArgs(suffix), true
+	}
+	return nil, false
+}
+
+func (c *CommandInput) executeLoginCommand(input string) (tea.Cmd, bool) {
+	if input == "login" {
+		return c.executeLogin("claws-login"), true
+	}
+	if suffix, ok := strings.CutPrefix(input, "login "); ok {
+		profileName := strings.TrimSpace(suffix)
+		if profileName == "" {
+			return c.executeLogin("claws-login"), true
+		}
+		if !config.IsValidProfileName(profileName) {
+			return func() tea.Msg { return ErrorMsg{Err: fmt.Errorf("invalid profile name: %q", profileName)} }, true
+		}
+		return c.executeLogin(profileName), true
+	}
+	return nil, false
+}
+
+func (c *CommandInput) executeFilterCommand(input string) (tea.Cmd, *NavigateMsg, bool) {
+	if input == "tag" {
+		return func() tea.Msg { return TagFilterMsg{Filter: ""} }, nil, true
+	}
+	if tagFilter, ok := strings.CutPrefix(input, "tag "); ok {
+		return func() tea.Msg { return TagFilterMsg{Filter: tagFilter} }, nil, true
+	}
+	if input == "tags" {
+		return nil, &NavigateMsg{View: NewTagSearchView(c.ctx, c.registry, "")}, true
+	}
+	if tagFilter, ok := strings.CutPrefix(input, "tags "); ok {
+		return nil, &NavigateMsg{View: NewTagSearchView(c.ctx, c.registry, tagFilter)}, true
+	}
+	return nil, nil, false
+}
+
+func (c *CommandInput) executeDiffCommand(input string) (tea.Cmd, bool) {
+	suffix, ok := strings.CutPrefix(input, "diff ")
+	if !ok {
+		return nil, false
+	}
+	parts := strings.Fields(suffix)
+	if len(parts) == 1 {
+		return func() tea.Msg { return DiffMsg{LeftID: "", RightID: parts[0]} }, true
+	}
+	if len(parts) >= 2 {
+		return func() tea.Msg { return DiffMsg{LeftID: parts[0], RightID: parts[1]} }, true
+	}
+	return nil, true
+}
+
+func (c *CommandInput) executePreferenceCommand(input string) (tea.Cmd, bool) {
+	if suffix, ok := strings.CutPrefix(input, "theme "); ok {
+		themeName := strings.TrimSpace(suffix)
+		if themeName != "" {
+			return func() tea.Msg { return ThemeChangeMsg{Name: themeName} }, true
+		}
+		return nil, true
+	}
+	if suffix, ok := strings.CutPrefix(input, "autosave "); ok {
+		switch strings.TrimSpace(suffix) {
+		case "on":
+			return func() tea.Msg { return PersistenceChangeMsg{Enabled: true} }, true
+		case "off":
+			return func() tea.Msg { return PersistenceChangeMsg{Enabled: false} }, true
+		default:
+			return nil, true
+		}
+	}
+	return nil, false
 }
 
 func (c *CommandInput) parseSortArgs(args string) tea.Cmd {

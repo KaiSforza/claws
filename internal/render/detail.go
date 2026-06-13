@@ -108,6 +108,14 @@ func (d *DetailBuilder) FieldIf(label string, ptr *string) *DetailBuilder {
 	return d
 }
 
+// FieldNonEmpty adds a field only if value is not empty.
+func (d *DetailBuilder) FieldNonEmpty(label, value string) *DetailBuilder {
+	if value != "" {
+		d.Field(label, value)
+	}
+	return d
+}
+
 // Line adds a raw line
 func (d *DetailBuilder) Line(text string) *DetailBuilder {
 	d.sb.WriteString(text + "\n")

@@ -2,11 +2,12 @@ package accessentries
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 
+	"github.com/clawscli/claws/custom/eks/eksutil"
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
@@ -32,9 +33,9 @@ func NewAccessEntryDAO(ctx context.Context) (dao.DAO, error) {
 }
 
 func (d *AccessEntryDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	principalArns, err := appaws.Paginate(ctx, func(token *string) ([]string, *string, error) {
@@ -76,9 +77,9 @@ func (d *AccessEntryDAO) List(ctx context.Context) ([]dao.Resource, error) {
 }
 
 func (d *AccessEntryDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	output, err := d.client.DescribeAccessEntry(ctx, &eks.DescribeAccessEntryInput{
@@ -90,19 +91,19 @@ func (d *AccessEntryDAO) Get(ctx context.Context, id string) (dao.Resource, erro
 	}
 
 	if output.AccessEntry == nil {
-		return nil, fmt.Errorf("access entry not found: %s", id)
+		return nil, errors.New("access entry not found: " + id)
 	}
 
 	return NewAccessEntryResource(*output.AccessEntry), nil
 }
 
 func (d *AccessEntryDAO) Delete(ctx context.Context, id string) error {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return err
 	}
 
-	_, err := d.client.DeleteAccessEntry(ctx, &eks.DeleteAccessEntryInput{
+	_, err = d.client.DeleteAccessEntry(ctx, &eks.DeleteAccessEntryInput{
 		ClusterName:  &clusterName,
 		PrincipalArn: &id,
 	})

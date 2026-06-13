@@ -2,9 +2,11 @@ package policies
 
 import (
 	"context"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/aws/smithy-go"
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
@@ -40,6 +42,7 @@ func (d *PolicyDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	}
 
 	var allPolicies []types.PolicySummary
+	var errs []error
 	for _, policyType := range policyTypes {
 		policies, err := appaws.Paginate(ctx, func(token *string) ([]types.PolicySummary, *string, error) {
 			output, err := d.client.ListPolicies(ctx, &organizations.ListPoliciesInput{
@@ -47,13 +50,16 @@ func (d *PolicyDAO) List(ctx context.Context) ([]dao.Resource, error) {
 				NextToken: token,
 			})
 			if err != nil {
-				// Skip if policy type is not enabled
-				return nil, nil, nil
+				if isPolicyTypeNotEnabled(err) {
+					return nil, nil, nil
+				}
+				return nil, nil, apperrors.Wrapf(err, "list organizations policies type %s", policyType)
 			}
 			return output.Policies, output.NextToken, nil
 		})
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
 		allPolicies = append(allPolicies, policies...)
 	}
@@ -62,7 +68,12 @@ func (d *PolicyDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	for i, policy := range allPolicies {
 		resources[i] = NewPolicyResource(policy)
 	}
-	return resources, nil
+	return resources, errors.Join(errs...)
+}
+
+func isPolicyTypeNotEnabled(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "PolicyTypeNotEnabledException"
 }
 
 // Get returns a specific policy.

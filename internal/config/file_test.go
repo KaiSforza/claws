@@ -123,6 +123,13 @@ func TestLoad_Save_Roundtrip(t *testing.T) {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Fatal("config file was not created")
 	}
+	info, err := os.Stat(filepath.Dir(configPath))
+	if err != nil {
+		t.Fatalf("stat config dir: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("config dir mode = %o, want 700", info.Mode().Perm())
+	}
 
 	loaded, err := Load()
 	if err != nil {

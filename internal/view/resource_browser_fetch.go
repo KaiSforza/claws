@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/config"
 	"github.com/clawscli/claws/internal/dao"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/log"
 	"github.com/clawscli/claws/internal/render"
 )
@@ -22,7 +24,7 @@ type listResourcesResult struct {
 	err       error
 }
 
-func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DAO) listResourcesResult {
+func (r *ResourceBrowser) buildListContext(ctx context.Context) context.Context {
 	listCtx := ctx
 	if r.fieldFilter != "" && r.fieldFilterValue != "" {
 		listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
@@ -32,7 +34,11 @@ func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DA
 			listCtx = dao.WithFilter(listCtx, key, "true")
 		}
 	}
+	return listCtx
+}
 
+func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DAO) listResourcesResult {
+	listCtx := r.buildListContext(ctx)
 	var resources []dao.Resource
 	var nextToken string
 	var err error
@@ -108,13 +114,12 @@ func fetchParallel[K comparable](
 		if !ok {
 			continue
 		}
+		allResources = append(allResources, result.resources...)
+		if result.nextToken != "" {
+			pageTokens[key] = result.nextToken
+		}
 		if result.err != nil {
 			errors = append(errors, formatError(key, result.err))
-		} else {
-			allResources = append(allResources, result.resources...)
-			if result.nextToken != "" {
-				pageTokens[key] = result.nextToken
-			}
 		}
 	}
 
@@ -157,15 +162,12 @@ func (r *ResourceBrowser) fetchMultiProfileResources(profiles []config.ProfileSe
 		}
 
 		listResult := r.fetchWithDAO(fetchCtx, d, existingTokens[key])
-		if listResult.err != nil {
-			return nil, "", listResult.err
-		}
 
 		wrapped := make([]dao.Resource, len(listResult.resources))
 		for i, res := range listResult.resources {
 			wrapped[i] = dao.WrapWithProfile(dao.UnwrapResource(res), key.Profile, accountID, key.Region)
 		}
-		return wrapped, listResult.nextToken, nil
+		return wrapped, listResult.nextToken, listResult.err
 	}
 
 	formatError := func(key profileRegionKey, err error) string {
@@ -194,15 +196,12 @@ func (r *ResourceBrowser) fetchMultiRegionResources(regions []string, existingTo
 			token = existingTokens[region]
 		}
 		listResult := r.fetchWithDAO(regionCtx, d, token)
-		if listResult.err != nil {
-			return nil, "", listResult.err
-		}
 
 		wrapped := make([]dao.Resource, len(listResult.resources))
 		for i, res := range listResult.resources {
 			wrapped[i] = dao.WrapWithRegion(dao.UnwrapResource(res), region)
 		}
-		return wrapped, listResult.nextToken, nil
+		return wrapped, listResult.nextToken, listResult.err
 	}
 
 	formatError := func(region string, err error) string {
@@ -215,15 +214,7 @@ func (r *ResourceBrowser) fetchMultiRegionResources(regions []string, existingTo
 
 func (r *ResourceBrowser) fetchWithDAO(ctx context.Context, d dao.DAO, token string) listResourcesResult {
 	if pagDAO, ok := d.(dao.PaginatedDAO); ok {
-		listCtx := ctx
-		if r.fieldFilter != "" && r.fieldFilterValue != "" {
-			listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
-		}
-		for key, val := range r.toggleStates {
-			if val {
-				listCtx = dao.WithFilter(listCtx, key, "true")
-			}
-		}
+		listCtx := r.buildListContext(ctx)
 		resources, nextToken, err := pagDAO.ListPage(listCtx, r.pageSize, token)
 		return listResourcesResult{resources: resources, nextToken: nextToken, err: err}
 	}
@@ -249,7 +240,7 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 	if isMultiProfile {
 		fetchResult := r.fetchMultiProfileResources(profiles, regions, nil)
 		if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-			return resourcesErrorMsg{err: fmt.Errorf("all profile/region pairs failed: %s", strings.Join(fetchResult.errors, "; "))}
+			return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all profile/region pairs failed")}
 		}
 
 		log.Debug("multi-profile resources loaded", "count", len(fetchResult.resources),
@@ -275,6 +266,16 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 		result := r.listResources(d)
 		if result.err != nil {
 			log.Error("failed to list resources", "error", result.err, "duration", time.Since(start))
+			if len(result.resources) > 0 {
+				return resourcesLoadedMsg{
+					dao:           d,
+					renderer:      renderer,
+					resources:     result.resources,
+					nextToken:     result.nextToken,
+					hasMorePages:  result.nextToken != "",
+					partialErrors: []string{result.err.Error()},
+				}
+			}
 			return resourcesErrorMsg{err: result.err}
 		}
 		log.Debug("resources loaded", "count", len(result.resources), "duration", time.Since(start))
@@ -290,7 +291,7 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 
 	fetchResult := r.fetchMultiRegionResources(regions, nil)
 	if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-		return resourcesErrorMsg{err: fmt.Errorf("all regions failed: %s", strings.Join(fetchResult.errors, "; "))}
+		return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all regions failed")}
 	}
 
 	log.Debug("multi-region resources loaded", "count", len(fetchResult.resources),
@@ -315,7 +316,7 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 	if isMultiProfile {
 		fetchResult := r.fetchMultiProfileResources(profiles, regions, nil)
 		if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-			return resourcesErrorMsg{err: fmt.Errorf("all profile/region pairs failed: %s", strings.Join(fetchResult.errors, "; "))}
+			return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all profile/region pairs failed")}
 		}
 
 		return resourcesLoadedMsg{
@@ -340,6 +341,16 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 
 		result := r.listResources(d)
 		if result.err != nil {
+			if len(result.resources) > 0 {
+				return resourcesLoadedMsg{
+					dao:           d,
+					renderer:      r.renderer,
+					resources:     result.resources,
+					nextToken:     result.nextToken,
+					hasMorePages:  result.nextToken != "",
+					partialErrors: []string{result.err.Error()},
+				}
+			}
 			return resourcesErrorMsg{err: result.err}
 		}
 
@@ -354,7 +365,7 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 
 	fetchResult := r.fetchMultiRegionResources(regions, nil)
 	if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-		return resourcesErrorMsg{err: fmt.Errorf("all regions failed: %s", strings.Join(fetchResult.errors, "; "))}
+		return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all regions failed")}
 	}
 
 	return resourcesLoadedMsg{
@@ -384,6 +395,7 @@ type nextPageLoadedMsg struct {
 	nextPageTokens      map[string]string
 	nextMultiPageTokens map[profileRegionKey]string
 	hasMorePages        bool
+	partialErrors       []string
 }
 
 type resourcesErrorMsg struct {
@@ -432,19 +444,19 @@ func (r *ResourceBrowser) loadNextPage() tea.Msg {
 	start := time.Now()
 	log.Debug("loading next page", "service", r.service, "resourceType", r.resourceType, "token", r.nextPageToken[:min(logTokenMaxLen, len(r.nextPageToken))])
 
-	listCtx := r.ctx
-	if r.fieldFilter != "" && r.fieldFilterValue != "" {
-		listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
-	}
-	for key, val := range r.toggleStates {
-		if val {
-			listCtx = dao.WithFilter(listCtx, key, "true")
-		}
-	}
+	listCtx := r.buildListContext(r.ctx)
 
 	resources, nextToken, err := pagDAO.ListPage(listCtx, r.pageSize, r.nextPageToken)
 	if err != nil {
 		log.Error("failed to load next page", "error", err, "duration", time.Since(start))
+		if len(resources) > 0 {
+			return nextPageLoadedMsg{
+				resources:     resources,
+				nextToken:     nextToken,
+				hasMorePages:  nextToken != "",
+				partialErrors: []string{err.Error()},
+			}
+		}
 		return resourcesErrorMsg{err: err}
 	}
 
@@ -477,6 +489,7 @@ func (r *ResourceBrowser) loadNextPageMultiRegion() tea.Msg {
 		resources:      fetchResult.resources,
 		nextPageTokens: fetchResult.pageTokens,
 		hasMorePages:   len(fetchResult.pageTokens) > 0,
+		partialErrors:  fetchResult.errors,
 	}
 }
 
@@ -500,5 +513,6 @@ func (r *ResourceBrowser) loadNextPageMultiProfile() tea.Msg {
 		resources:           fetchResult.resources,
 		nextMultiPageTokens: fetchResult.pageTokens,
 		hasMorePages:        len(fetchResult.pageTokens) > 0,
+		partialErrors:       fetchResult.errors,
 	}
 }

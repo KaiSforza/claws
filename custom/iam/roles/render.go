@@ -8,7 +8,6 @@ import (
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
-	"github.com/clawscli/claws/internal/enrichment"
 	"github.com/clawscli/claws/internal/render"
 )
 
@@ -123,17 +122,11 @@ func (r *RoleRenderer) RenderDetail(resource dao.Resource) string {
 		}
 	}
 
-	// Attached Policies
 	d.Section("Attached Policies")
-	managedFailed := enrichment.IsFailure(rr.AttachedPoliciesStatus)
-	inlineFailed := enrichment.IsFailure(rr.InlinePoliciesStatus)
-	if managedFailed || inlineFailed {
-		if managedFailed {
-			d.Field("Managed Policies", enrichment.Display(rr.AttachedPoliciesStatus))
-		}
-		if inlineFailed {
-			d.Field("Inline Policies", enrichment.Display(rr.InlinePoliciesStatus))
-		}
+	if d.StatusFields(
+		render.StatusField{Label: "Managed Policies", Status: rr.AttachedPoliciesStatus},
+		render.StatusField{Label: "Inline Policies", Status: rr.InlinePoliciesStatus},
+	) {
 	} else if len(rr.AttachedPolicies) == 0 && len(rr.InlinePolicies) == 0 {
 		d.Field("Policies", render.Empty)
 	} else {

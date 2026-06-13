@@ -1,0 +1,23 @@
+[1;38;5;170mIAM Role: my-role[m
+
+
+                 
+[1;38;5;33mBasic Information[m
+[38;5;247mRole Name:[m                      [38;5;252mmy-role[m
+[38;5;247mPath:[m                           [38;5;252m/service-role/[m
+[38;5;247mARN:[m                            [38;5;252marn:aws:iam::123456789012:role/my-role[m
+[38;5;247mRole ID:[m                        [38;5;252mAROAEXAMPLE12345[m
+
+                
+[1;38;5;33mSession Settings[m
+[38;5;247mMax Session Duration:[m           [38;5;252m3600 seconds (1 hours)[m
+
+                 
+[1;38;5;33mAttached Policies[m
+[38;5;247mPolicies:[m                       None
+
+---SUMMARY---
+Role Name=my-role
+Path=/service-role/
+ARN=arn:aws:iam::123456789012:role/my-role
+Max Session=1h

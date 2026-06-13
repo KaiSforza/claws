@@ -2,7 +2,7 @@ package services
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -10,7 +10,6 @@ import (
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
-	"github.com/clawscli/claws/internal/log"
 )
 
 // ServiceDAO provides data access for ECS services
@@ -56,16 +55,17 @@ func (d *ServiceDAO) listAllServices(ctx context.Context) ([]dao.Resource, error
 	}
 
 	resources := make([]dao.Resource, 0, len(clusterArns))
+	var errs []error
 	for _, clusterArn := range clusterArns {
 		clusterServices, err := d.listServicesInCluster(ctx, clusterArn)
 		if err != nil {
-			log.Warn("failed to list services in cluster", "cluster", clusterArn, "error", err)
+			errs = append(errs, apperrors.Wrapf(err, "list services in cluster %s", clusterArn))
 			continue
 		}
 		resources = append(resources, clusterServices...)
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *ServiceDAO) listServicesInCluster(ctx context.Context, cluster string) ([]dao.Resource, error) {
@@ -89,6 +89,7 @@ func (d *ServiceDAO) listServicesInCluster(ctx context.Context, cluster string) 
 
 	// Describe services in batches of 10 (API limit)
 	resources := make([]dao.Resource, 0, len(serviceArns))
+	var errs []error
 	for i := 0; i < len(serviceArns); i += 10 {
 		end := i + 10
 		if end > len(serviceArns) {
@@ -102,7 +103,7 @@ func (d *ServiceDAO) listServicesInCluster(ctx context.Context, cluster string) 
 
 		descOutput, err := d.client.DescribeServices(ctx, descInput)
 		if err != nil {
-			log.Warn("failed to describe services", "cluster", cluster, "error", err)
+			errs = append(errs, apperrors.Wrapf(err, "describe services in cluster %s", cluster))
 			continue
 		}
 
@@ -111,13 +112,13 @@ func (d *ServiceDAO) listServicesInCluster(ctx context.Context, cluster string) 
 		}
 	}
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *ServiceDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
 	if clusterName == "" {
-		return nil, fmt.Errorf("cluster name filter required")
+		return nil, errors.New("cluster name filter required")
 	}
 
 	input := &ecs.DescribeServicesInput{
@@ -131,7 +132,7 @@ func (d *ServiceDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if len(output.Services) == 0 {
-		return nil, fmt.Errorf("service not found: %s", id)
+		return nil, errors.New("service not found: " + id)
 	}
 
 	return NewServiceResource(output.Services[0]), nil
@@ -140,7 +141,7 @@ func (d *ServiceDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 func (d *ServiceDAO) Delete(ctx context.Context, id string) error {
 	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
 	if clusterName == "" {
-		return fmt.Errorf("cluster name filter required")
+		return errors.New("cluster name filter required")
 	}
 
 	force := true

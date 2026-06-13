@@ -12,6 +12,11 @@ import (
 	apperrors "github.com/clawscli/claws/internal/errors"
 )
 
+const (
+	defaultPageSize = 100
+	maxPageSize     = 1000
+)
+
 // RoleDAO provides data access for IAM Roles
 type RoleDAO struct {
 	dao.BaseDAO
@@ -33,7 +38,7 @@ func NewRoleDAO(ctx context.Context) (dao.DAO, error) {
 // List returns roles (first page only for backwards compatibility).
 // For paginated access, use ListPage instead.
 func (d *RoleDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	resources, _, err := d.ListPage(ctx, 100, "")
+	resources, _, err := d.ListPage(ctx, defaultPageSize, "")
 	return resources, err
 }
 
@@ -55,8 +60,8 @@ func (d *RoleDAO) ListPage(ctx context.Context, pageSize int, pageToken string) 
 	}
 
 	maxItems := int32(pageSize)
-	if maxItems > 1000 {
-		maxItems = 1000 // AWS API max
+	if maxItems > maxPageSize {
+		maxItems = maxPageSize // AWS API max
 	}
 
 	input := &iam.ListRolesInput{
@@ -94,21 +99,21 @@ func (d *RoleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 
 	res := NewRoleResource(*output.Role)
 
-	// Fetch attached policies
-	if policies, err := d.client.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: &id}); err == nil {
+	policies, status := enrichment.Fetch(func() (*iam.ListAttachedRolePoliciesOutput, error) {
+		return d.client.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: &id})
+	})
+	if enrichment.Fetched == status {
 		res.AttachedPolicies = policies.AttachedPolicies
-		res.AttachedPoliciesStatus = enrichment.Fetched
-	} else {
-		res.AttachedPoliciesStatus = enrichment.FailureStatus(err)
 	}
+	res.AttachedPoliciesStatus = status
 
-	// Fetch inline policy names
-	if inline, err := d.client.ListRolePolicies(ctx, &iam.ListRolePoliciesInput{RoleName: &id}); err == nil {
+	inline, status := enrichment.Fetch(func() (*iam.ListRolePoliciesOutput, error) {
+		return d.client.ListRolePolicies(ctx, &iam.ListRolePoliciesInput{RoleName: &id})
+	})
+	if enrichment.Fetched == status {
 		res.InlinePolicies = inline.PolicyNames
-		res.InlinePoliciesStatus = enrichment.Fetched
-	} else {
-		res.InlinePoliciesStatus = enrichment.FailureStatus(err)
 	}
+	res.InlinePoliciesStatus = status
 
 	return res, nil
 }
