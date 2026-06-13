@@ -9,12 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/computeoptimizer"
 	"github.com/aws/aws-sdk-go-v2/service/computeoptimizer/types"
-	"golang.org/x/sync/errgroup"
 
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
-	"github.com/clawscli/claws/internal/log"
 )
 
 // RecommendationDAO provides data access for Compute Optimizer Recommendations.
@@ -43,7 +41,7 @@ type recommendationFetcher struct {
 
 // List returns all recommendations from multiple resource types.
 // Fetches are executed in parallel for better performance.
-// Partial failures are logged but don't prevent returning results from successful APIs.
+// Partial failures are returned with successful results so callers can surface incomplete data.
 func (d *RecommendationDAO) List(ctx context.Context) ([]dao.Resource, error) {
 	fetchers := []recommendationFetcher{
 		{"EC2", d.listEC2Recommendations},
@@ -59,26 +57,24 @@ func (d *RecommendationDAO) List(ctx context.Context) ([]dao.Resource, error) {
 		errs      []error
 	)
 
-	// Use errgroup for parallel execution. We tolerate partial failures,
-	// so goroutines always return nil to avoid early cancellation.
-	g, ctx := errgroup.WithContext(ctx)
+	var wg sync.WaitGroup
 	for _, f := range fetchers {
-		f := f // capture for goroutine
-		g.Go(func() error {
+		wg.Go(func() {
 			recs, err := f.fetch(ctx)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				log.Warn("failed to list recommendations", "type", f.name, "error", err)
 				errs = append(errs, apperrors.Wrapf(err, "%s", f.name))
 			} else {
 				resources = append(resources, recs...)
 			}
-			return nil // always return nil to continue fetching other types
 		})
 	}
 
-	_ = g.Wait() // errors are collected in errs, not returned by goroutines
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		errs = append(errs, apperrors.Wrap(err, "list compute optimizer recommendations"))
+	}
 
 	// If all APIs failed, return combined error
 	if len(errs) == len(fetchers) {
@@ -95,7 +91,7 @@ func (d *RecommendationDAO) List(ctx context.Context) ([]dao.Resource, error) {
 		return ri.savingsValue > rj.savingsValue
 	})
 
-	return resources, nil
+	return resources, errors.Join(errs...)
 }
 
 func (d *RecommendationDAO) listEC2Recommendations(ctx context.Context) ([]dao.Resource, error) {
@@ -215,12 +211,12 @@ func (d *RecommendationDAO) Get(ctx context.Context, id string) (dao.Resource, e
 			return r, nil
 		}
 	}
-	return nil, fmt.Errorf("recommendation not found: %s", id)
+	return nil, errors.New("recommendation not found: " + id)
 }
 
 // Delete is not supported.
 func (d *RecommendationDAO) Delete(ctx context.Context, id string) error {
-	return fmt.Errorf("delete not supported for compute optimizer recommendations")
+	return errors.New("delete not supported for compute optimizer recommendations")
 }
 
 // Supports returns true only for List operation.
