@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -622,7 +623,9 @@ func TestShowModalFromNormalState(t *testing.T) {
 
 func TestModalStackClearedOnRegionChange(t *testing.T) {
 	app := newTestApp(t)
-	app.currentView = &MockView{name: "Dashboard"}
+	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
+	app.currentView = dashboard
+	app.viewStack = []view.View{&MockView{name: "ServiceBrowser"}}
 
 	parentModal := &view.Modal{Content: &MockView{name: "ParentModal"}}
 	childModal := &view.Modal{Content: &MockView{name: "ChildModal"}}
@@ -637,11 +640,20 @@ func TestModalStackClearedOnRegionChange(t *testing.T) {
 	if len(app.modalStack) != 0 {
 		t.Errorf("Expected empty modalStack after RegionChangedMsg, got %d", len(app.modalStack))
 	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView to stay on Dashboard, got %T", app.currentView)
+	}
+	if len(app.viewStack) != 1 {
+		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
 }
 
 func TestModalStackClearedOnProfileChange(t *testing.T) {
 	app := newTestApp(t)
-	app.currentView = &MockView{name: "Dashboard"}
+	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
+	app.currentView = dashboard
+	app.viewStack = []view.View{&MockView{name: "ServiceBrowser"}}
+	app.profileRefreshError = errors.New("previous refresh failed")
 
 	parentModal := &view.Modal{Content: &MockView{name: "ParentModal"}}
 	childModal := &view.Modal{Content: &MockView{name: "ChildModal"}}
@@ -655,6 +667,18 @@ func TestModalStackClearedOnProfileChange(t *testing.T) {
 	}
 	if len(app.modalStack) != 0 {
 		t.Errorf("Expected empty modalStack after ProfilesChangedMsg, got %d", len(app.modalStack))
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView to stay on Dashboard, got %T", app.currentView)
+	}
+	if len(app.viewStack) != 1 {
+		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
+	if app.profileRefreshError != nil {
+		t.Errorf("Expected profileRefreshError cleared, got %v", app.profileRefreshError)
 	}
 }
 
@@ -685,6 +709,7 @@ func TestWarningScreenDismissal(t *testing.T) {
 
 func TestProfileChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	app := newTestApp(t)
+	app.profileRefreshError = errors.New("previous refresh failed")
 
 	dashboard := &RefreshableMockView{MockView: MockView{name: "Dashboard"}, canRefresh: true}
 	resourceBrowser := &RefreshableMockView{MockView: MockView{name: "ResourceBrowser"}, canRefresh: true}
@@ -699,6 +724,15 @@ func TestProfileChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	}
 	if len(app.viewStack) != 1 {
 		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard {
+		t.Error("Expected viewStack to keep Dashboard entry")
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
+	if app.profileRefreshError != nil {
+		t.Errorf("Expected profileRefreshError cleared, got %v", app.profileRefreshError)
 	}
 }
 
@@ -718,6 +752,9 @@ func TestRegionChangeStaysOnCurrentRefreshableView(t *testing.T) {
 	}
 	if len(app.viewStack) != 1 {
 		t.Errorf("Expected viewStack length 1, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard {
+		t.Error("Expected viewStack to keep Dashboard entry")
 	}
 }
 
@@ -739,6 +776,12 @@ func TestProfileChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
 	if len(app.viewStack) != 2 {
 		t.Errorf("Expected viewStack length 2, got %d", len(app.viewStack))
 	}
+	if app.viewStack[0] != dashboard || app.viewStack[1] != resourceBrowser {
+		t.Error("Expected viewStack entries unchanged")
+	}
+	if !app.profileRefreshing {
+		t.Error("Expected profileRefreshing=true after ProfilesChangedMsg")
+	}
 }
 
 func TestRegionChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
@@ -758,6 +801,9 @@ func TestRegionChangeFromNonRefreshableViewStaysOnCurrentView(t *testing.T) {
 	}
 	if len(app.viewStack) != 2 {
 		t.Errorf("Expected viewStack length 2, got %d", len(app.viewStack))
+	}
+	if app.viewStack[0] != dashboard || app.viewStack[1] != resourceBrowser {
+		t.Error("Expected viewStack entries unchanged")
 	}
 }
 

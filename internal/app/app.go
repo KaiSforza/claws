@@ -182,14 +182,8 @@ func (a *App) Init() tea.Cmd {
 
 // Update implements tea.Model
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if a.showWarnings && a.warningsReady {
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-			if keyMsg.Code == tea.KeyEnter || keyMsg.String() == "space" || keyMsg.String() == "q" {
-				a.showWarnings = false
-				return a, nil
-			}
-			return a, nil
-		}
+	if model, cmd, handled := a.handleWarningMsg(msg); handled {
+		return model, cmd
 	}
 
 	// Lifecycle messages must run before modal/command-mode focus, otherwise
@@ -203,196 +197,35 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleModalUpdate(msg)
 	}
 
-	// Handle command mode first
-	if a.commandMode {
-		switch msg := msg.(type) {
-		case tea.KeyPressMsg:
-			cmd, nav := a.commandInput.Update(msg)
-			if !a.commandInput.IsActive() {
-				a.commandMode = false
-			}
-			if nav != nil {
-				a.pushOrClearStack(nav.ClearStack)
-				a.currentView = nav.View
-				cmds := []tea.Cmd{
-					cmd,
-					a.currentView.Init(),
-					a.currentView.SetSize(a.width, a.height-2),
-				}
-				return a, tea.Batch(cmds...)
-			}
-			return a, cmd
-		}
+	if model, cmd, handled := a.handleCommandModeMsg(msg); handled {
+		return model, cmd
 	}
 
+	return a.handleRoutedMsg(msg)
+}
+
+func (a *App) handleRoutedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		a.width = msg.Width
-		a.height = msg.Height
-		a.help.SetWidth(msg.Width)
-		// Update cached styles with new width
-		a.styles = newAppStyles(msg.Width)
-		// Mark warnings ready after first WindowSizeMsg (terminal initialized).
-		// Safe to set unconditionally - only affects dismissal when showWarnings is true.
-		a.warningsReady = true
-		if a.currentView != nil {
-			return a, a.currentView.SetSize(msg.Width, msg.Height-2)
-		}
-		return a, nil
+		return a.handleWindowSizeMsg(msg)
 
 	case view.ThemeChangedMsg:
-		a.styles = newAppStyles(a.width)
-		a.modalRenderer.ReloadStyles()
-		a.commandInput.ReloadStyles()
-		if a.currentView != nil {
-			a.currentView.Update(msg)
-		}
-		for _, v := range a.viewStack {
-			v.Update(msg)
-		}
-		return a, nil
+		return a.handleThemeChangedMsg(msg)
 
 	case view.CompactHeaderChangedMsg:
-		if a.currentView != nil {
-			a.currentView.Update(msg)
-		}
-		for _, v := range a.viewStack {
-			v.Update(msg)
-		}
-		return a, nil
+		return a.handleViewBroadcastMsg(msg)
 
 	case view.ThemeChangeMsg:
-		theme := ui.GetPreset(msg.Name)
-		if theme == nil {
-			a.err = fmt.Errorf("unknown theme: %s (available: %v)", msg.Name, ui.AvailableThemes())
-			return a, nil
-		}
-		ui.SetTheme(theme)
-		a.clipboardFlash = "Theme: " + msg.Name
-		a.clipboardWarning = false
-		if config.File().PersistenceEnabled() {
-			if err := config.File().SaveTheme(msg.Name); err != nil {
-				log.Warn("failed to persist theme", "error", err)
-				a.clipboardFlash = "Theme: " + msg.Name + " (save failed)"
-				a.clipboardWarning = true
-			}
-		}
-		return a, tea.Batch(
-			func() tea.Msg { return view.ThemeChangedMsg{} },
-			tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} }),
-		)
+		return a.handleThemeChangeMsg(msg)
 
 	case view.PersistenceChangeMsg:
-		if err := config.File().SavePersistence(msg.Enabled); err != nil {
-			a.err = fmt.Errorf("failed to save autosave setting: %w", err)
-			return a, nil
-		}
-		if msg.Enabled {
-			a.clipboardFlash = "Autosave enabled"
-		} else {
-			a.clipboardFlash = "Autosave disabled"
-		}
-		a.clipboardWarning = false
-		return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg {
-			return clearFlashMsg{}
-		})
+		return a.handlePersistenceChangeMsg(msg)
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseBackward {
-			if cmd := a.navigateBack(); cmd != nil {
-				return a, cmd
-			}
-		}
+		return a.handleMouseClickMsg(msg)
 
 	case tea.KeyPressMsg:
-		// Handle back navigation (esc or backspace)
-		isBack := view.IsEscKey(msg) || msg.Code == tea.KeyBackspace
-
-		if isBack {
-			// If current view has active input, let it handle esc first
-			if ic, ok := a.currentView.(view.InputCapture); ok && ic.HasActiveInput() {
-				model, cmd := a.currentView.Update(msg)
-				if v, ok := model.(view.View); ok {
-					a.currentView = v
-				}
-				return a, cmd
-			}
-			if cmd := a.navigateBack(); cmd != nil {
-				return a, cmd
-			}
-			return a, nil
-		}
-
-		if ic, ok := a.currentView.(view.InputCapture); ok && ic.HasActiveInput() {
-			model, cmd := a.currentView.Update(msg)
-			if v, ok := model.(view.View); ok {
-				a.currentView = v
-			}
-			return a, cmd
-		}
-
-		switch {
-		case key.Matches(msg, a.keys.Quit):
-			switch a.currentView.(type) {
-			case *view.DetailView, *view.DiffView, *view.LogView:
-				if cmd := a.navigateBack(); cmd != nil {
-					return a, cmd
-				}
-			}
-			return a, tea.Quit
-
-		case key.Matches(msg, a.keys.Help):
-			helpView := view.NewHelpView()
-			a.modal = &view.Modal{Content: helpView, Width: view.ModalWidthHelp}
-			return a, a.modal.SetSize(a.width, a.height)
-
-		case key.Matches(msg, a.keys.Command):
-			a.commandMode = true
-			// Set completion providers if current view is a ResourceBrowser
-			if rb, ok := a.currentView.(*view.ResourceBrowser); ok {
-				a.commandInput.SetTagProvider(rb)
-				a.commandInput.SetDiffProvider(rb)
-			} else {
-				a.commandInput.SetTagProvider(nil)
-				a.commandInput.SetDiffProvider(nil)
-			}
-			return a, a.commandInput.Activate()
-
-		case key.Matches(msg, a.keys.Region):
-			regionSelector := view.NewRegionSelector(a.ctx)
-			a.modal = &view.Modal{Content: regionSelector, Width: view.ModalWidthRegion}
-			return a, tea.Batch(
-				regionSelector.Init(),
-				a.modal.SetSize(a.width, a.height),
-			)
-
-		case key.Matches(msg, a.keys.Profile):
-			profileSelector := view.NewProfileSelector()
-			a.modal = &view.Modal{Content: profileSelector, Width: view.ModalWidthProfile}
-			return a, tea.Batch(
-				profileSelector.Init(),
-				a.modal.SetSize(a.width, a.height),
-			)
-
-		case key.Matches(msg, a.keys.AI):
-			aiCtx := a.buildAIContext()
-			chatOverlay := view.NewChatOverlay(a.ctx, a.registry, aiCtx)
-			a.modal = &view.Modal{Content: chatOverlay, Width: view.ModalWidthChat}
-			return a, tea.Batch(
-				chatOverlay.Init(),
-				a.modal.SetSize(a.width, a.height),
-			)
-
-		case key.Matches(msg, a.keys.CompactHeader):
-			compact := !config.Global().CompactHeader()
-			config.Global().SetCompactHeader(compact)
-			if config.File().PersistenceEnabled() {
-				if err := config.File().SaveCompactHeader(compact); err != nil {
-					log.Warn("failed to persist compact header", "error", err)
-				}
-			}
-			return a, func() tea.Msg { return view.CompactHeaderChangedMsg{} }
-		}
+		return a.handleKeyPressMsg(msg)
 
 	case view.ShowModalMsg:
 		return a.showModal(msg.Modal)
@@ -401,69 +234,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleNavigate(msg)
 
 	case view.ClearHistoryMsg:
-		log.Debug("clearing navigation history", "stackDepth", len(a.viewStack))
-		a.viewStack = nil
-		return a, nil
+		return a.handleClearHistoryMsg()
 
 	case view.ErrorMsg:
-		log.Error("application error", "error", msg.Err)
-		a.err = msg.Err
-		// Auto-clear transient errors after 3 seconds
-		return a, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-			return clearErrorMsg{}
-		})
+		return a.handleErrorMsg(msg)
 
 	case clearErrorMsg:
-		a.err = nil
-		return a, nil
+		return a.handleClearErrorMsg()
 
 	case clipboard.CopiedMsg:
-		a.clipboardFlash = "Copied " + msg.Label
-		a.clipboardWarning = false
-		return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg {
-			return clearFlashMsg{}
-		})
+		return a.handleClipboardCopiedMsg(msg)
 
 	case clipboard.NoARNMsg:
-		a.clipboardFlash = "No ARN available"
-		a.clipboardWarning = true
-		return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg {
-			return clearFlashMsg{}
-		})
+		return a.handleClipboardNoARNMsg()
 
 	case clearFlashMsg:
-		a.clipboardFlash = ""
-		return a, nil
+		return a.handleClearFlashMsg()
 
 	case startupResourceMsg:
-		if a.startupPath == nil {
-			return a, nil
-		}
-		if msg.err != nil || msg.resource == nil {
-			if msg.err != nil {
-				log.Warn("startup resource fetch failed", "error", msg.err, "id", a.startupPath.ResourceID)
-			}
-			a.clipboardFlash = "Resource not found: " + a.startupPath.ResourceID
-			a.clipboardWarning = true
-			return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg {
-				return clearFlashMsg{}
-			})
-		}
-		renderer, err := a.registry.GetRenderer(a.startupPath.Service, a.startupPath.ResourceType)
-		if err != nil {
-			log.Warn("failed to get renderer for startup resource", "error", err)
-			return a, nil
-		}
-		// DAO is optional - DetailView handles nil gracefully (just disables refresh).
-		// Unlike renderer which is required for display, DAO only enables refresh functionality.
-		d, err := a.registry.GetDAO(a.ctx, a.startupPath.Service, a.startupPath.ResourceType)
-		if err != nil {
-			log.Warn("failed to get DAO for startup resource", "error", err)
-		}
-		detailView := view.NewDetailView(a.ctx, msg.resource, renderer, a.startupPath.Service, a.startupPath.ResourceType, a.registry, d)
-		a.viewStack = append(a.viewStack, a.currentView)
-		a.currentView = detailView
-		return a, tea.Batch(detailView.Init(), detailView.SetSize(a.width, a.height-2))
+		return a.handleStartupResourceMsg(msg)
 
 	case navmsg.RegionChangedMsg:
 		return a.handleRegionChanged(msg)
@@ -472,27 +261,309 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleProfilesChanged(msg)
 
 	case view.SortMsg:
-		// Delegate sort command to current view
-		if a.currentView != nil {
-			model, cmd := a.currentView.Update(msg)
-			if v, ok := model.(view.View); ok {
-				a.currentView = v
-			}
-			return a, cmd
-		}
+		return a.delegateToCurrentView(msg)
+	}
+
+	return a.delegateToCurrentView(msg)
+}
+
+func (a *App) handleWarningMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if !a.showWarnings || !a.warningsReady {
+		return nil, nil, false
+	}
+	keyMsg, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return nil, nil, false
+	}
+	if keyMsg.Code == tea.KeyEnter || keyMsg.String() == "space" || keyMsg.String() == "q" {
+		a.showWarnings = false
+	}
+	return a, nil, true
+}
+
+func (a *App) handleCommandModeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if !a.commandMode {
+		return nil, nil, false
+	}
+	keyMsg, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return nil, nil, false
+	}
+	cmd, nav := a.commandInput.Update(keyMsg)
+	if !a.commandInput.IsActive() {
+		a.commandMode = false
+	}
+	if nav == nil {
+		return a, cmd, true
+	}
+	a.pushOrClearStack(nav.ClearStack)
+	a.currentView = nav.View
+	return a, tea.Batch(cmd, a.currentView.Init(), a.currentView.SetSize(a.width, a.height-2)), true
+}
+
+func (a *App) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	a.width = msg.Width
+	a.height = msg.Height
+	a.help.SetWidth(msg.Width)
+	a.styles = newAppStyles(msg.Width)
+	// Mark warnings ready after first WindowSizeMsg (terminal initialized).
+	// Safe to set unconditionally - only affects dismissal when showWarnings is true.
+	a.warningsReady = true
+	if a.currentView != nil {
+		return a, a.currentView.SetSize(msg.Width, msg.Height-2)
+	}
+	return a, nil
+}
+
+func (a *App) handleThemeChangedMsg(msg view.ThemeChangedMsg) (tea.Model, tea.Cmd) {
+	a.styles = newAppStyles(a.width)
+	a.modalRenderer.ReloadStyles()
+	a.commandInput.ReloadStyles()
+	return a.handleViewBroadcastMsg(msg)
+}
+
+func (a *App) handleViewBroadcastMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.currentView != nil {
+		a.currentView.Update(msg)
+	}
+	for _, v := range a.viewStack {
+		v.Update(msg)
+	}
+	return a, nil
+}
+
+func (a *App) handleThemeChangeMsg(msg view.ThemeChangeMsg) (tea.Model, tea.Cmd) {
+	theme := ui.GetPreset(msg.Name)
+	if theme == nil {
+		a.err = fmt.Errorf("unknown theme: %s (available: %v)", msg.Name, ui.AvailableThemes())
 		return a, nil
 	}
-
-	// Delegate to current view
-	if a.currentView != nil {
-		model, cmd := a.currentView.Update(msg)
-		if v, ok := model.(view.View); ok {
-			a.currentView = v
+	ui.SetTheme(theme)
+	a.clipboardFlash = "Theme: " + msg.Name
+	a.clipboardWarning = false
+	if config.File().PersistenceEnabled() {
+		if err := config.File().SaveTheme(msg.Name); err != nil {
+			log.Warn("failed to persist theme", "error", err)
+			a.clipboardFlash = "Theme: " + msg.Name + " (save failed)"
+			a.clipboardWarning = true
 		}
+	}
+	return a, tea.Batch(
+		func() tea.Msg { return view.ThemeChangedMsg{} },
+		tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} }),
+	)
+}
+
+func (a *App) handlePersistenceChangeMsg(msg view.PersistenceChangeMsg) (tea.Model, tea.Cmd) {
+	if err := config.File().SavePersistence(msg.Enabled); err != nil {
+		a.err = fmt.Errorf("failed to save autosave setting: %w", err)
+		return a, nil
+	}
+	if msg.Enabled {
+		a.clipboardFlash = "Autosave enabled"
+	} else {
+		a.clipboardFlash = "Autosave disabled"
+	}
+	a.clipboardWarning = false
+	return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
+}
+
+func (a *App) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	if msg.Button == tea.MouseBackward {
+		if cmd := a.navigateBack(); cmd != nil {
+			return a, cmd
+		}
+	}
+	return a, nil
+}
+
+func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if view.IsEscKey(msg) || msg.Code == tea.KeyBackspace {
+		return a.handleBackKeyMsg(msg)
+	}
+	if cmd, handled := a.updateCurrentViewInput(msg); handled {
 		return a, cmd
 	}
+	return a.handleGlobalKeyMsg(msg)
+}
 
+func (a *App) handleBackKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if cmd, handled := a.updateCurrentViewInput(msg); handled {
+		return a, cmd
+	}
+	if cmd := a.navigateBack(); cmd != nil {
+		return a, cmd
+	}
 	return a, nil
+}
+
+func (a *App) updateCurrentViewInput(msg tea.Msg) (tea.Cmd, bool) {
+	if a.currentView == nil {
+		return nil, false
+	}
+	ic, ok := a.currentView.(view.InputCapture)
+	if !ok || !ic.HasActiveInput() {
+		return nil, false
+	}
+	model, cmd := a.currentView.Update(msg)
+	if v, ok := model.(view.View); ok {
+		a.currentView = v
+	}
+	return cmd, true
+}
+
+func (a *App) handleGlobalKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, a.keys.Quit):
+		return a.handleQuitKeyMsg()
+	case key.Matches(msg, a.keys.Help):
+		return a.openHelpModal()
+	case key.Matches(msg, a.keys.Command):
+		return a.activateCommandMode()
+	case key.Matches(msg, a.keys.Region):
+		return a.openRegionSelector()
+	case key.Matches(msg, a.keys.Profile):
+		return a.openProfileSelector()
+	case key.Matches(msg, a.keys.AI):
+		return a.openAIChatModal()
+	case key.Matches(msg, a.keys.CompactHeader):
+		return a.toggleCompactHeader()
+	}
+	return a, nil
+}
+
+func (a *App) handleQuitKeyMsg() (tea.Model, tea.Cmd) {
+	switch a.currentView.(type) {
+	case *view.DetailView, *view.DiffView, *view.LogView:
+		if cmd := a.navigateBack(); cmd != nil {
+			return a, cmd
+		}
+	}
+	return a, tea.Quit
+}
+
+func (a *App) openHelpModal() (tea.Model, tea.Cmd) {
+	helpView := view.NewHelpView()
+	a.modal = &view.Modal{Content: helpView, Width: view.ModalWidthHelp}
+	return a, a.modal.SetSize(a.width, a.height)
+}
+
+func (a *App) activateCommandMode() (tea.Model, tea.Cmd) {
+	a.commandMode = true
+	// Set completion providers if current view is a ResourceBrowser.
+	if rb, ok := a.currentView.(*view.ResourceBrowser); ok {
+		a.commandInput.SetTagProvider(rb)
+		a.commandInput.SetDiffProvider(rb)
+	} else {
+		a.commandInput.SetTagProvider(nil)
+		a.commandInput.SetDiffProvider(nil)
+	}
+	return a, a.commandInput.Activate()
+}
+
+func (a *App) openRegionSelector() (tea.Model, tea.Cmd) {
+	regionSelector := view.NewRegionSelector(a.ctx)
+	a.modal = &view.Modal{Content: regionSelector, Width: view.ModalWidthRegion}
+	return a, tea.Batch(regionSelector.Init(), a.modal.SetSize(a.width, a.height))
+}
+
+func (a *App) openProfileSelector() (tea.Model, tea.Cmd) {
+	profileSelector := view.NewProfileSelector()
+	a.modal = &view.Modal{Content: profileSelector, Width: view.ModalWidthProfile}
+	return a, tea.Batch(profileSelector.Init(), a.modal.SetSize(a.width, a.height))
+}
+
+func (a *App) openAIChatModal() (tea.Model, tea.Cmd) {
+	aiCtx := a.buildAIContext()
+	chatOverlay := view.NewChatOverlay(a.ctx, a.registry, aiCtx)
+	a.modal = &view.Modal{Content: chatOverlay, Width: view.ModalWidthChat}
+	return a, tea.Batch(chatOverlay.Init(), a.modal.SetSize(a.width, a.height))
+}
+
+func (a *App) toggleCompactHeader() (tea.Model, tea.Cmd) {
+	compact := !config.Global().CompactHeader()
+	config.Global().SetCompactHeader(compact)
+	if config.File().PersistenceEnabled() {
+		if err := config.File().SaveCompactHeader(compact); err != nil {
+			log.Warn("failed to persist compact header", "error", err)
+		}
+	}
+	return a, func() tea.Msg { return view.CompactHeaderChangedMsg{} }
+}
+
+func (a *App) handleClearHistoryMsg() (tea.Model, tea.Cmd) {
+	log.Debug("clearing navigation history", "stackDepth", len(a.viewStack))
+	a.viewStack = nil
+	return a, nil
+}
+
+func (a *App) handleErrorMsg(msg view.ErrorMsg) (tea.Model, tea.Cmd) {
+	log.Error("application error", "error", msg.Err)
+	a.err = msg.Err
+	// Auto-clear transient errors after 3 seconds.
+	return a, tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return clearErrorMsg{} })
+}
+
+func (a *App) handleClearErrorMsg() (tea.Model, tea.Cmd) {
+	a.err = nil
+	return a, nil
+}
+
+func (a *App) handleClipboardCopiedMsg(msg clipboard.CopiedMsg) (tea.Model, tea.Cmd) {
+	a.clipboardFlash = "Copied " + msg.Label
+	a.clipboardWarning = false
+	return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
+}
+
+func (a *App) handleClipboardNoARNMsg() (tea.Model, tea.Cmd) {
+	a.clipboardFlash = "No ARN available"
+	a.clipboardWarning = true
+	return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
+}
+
+func (a *App) handleClearFlashMsg() (tea.Model, tea.Cmd) {
+	a.clipboardFlash = ""
+	return a, nil
+}
+
+func (a *App) handleStartupResourceMsg(msg startupResourceMsg) (tea.Model, tea.Cmd) {
+	if a.startupPath == nil {
+		return a, nil
+	}
+	if msg.err != nil || msg.resource == nil {
+		if msg.err != nil {
+			log.Warn("startup resource fetch failed", "error", msg.err, "id", a.startupPath.ResourceID)
+		}
+		a.clipboardFlash = "Resource not found: " + a.startupPath.ResourceID
+		a.clipboardWarning = true
+		return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
+	}
+	renderer, err := a.registry.GetRenderer(a.startupPath.Service, a.startupPath.ResourceType)
+	if err != nil {
+		log.Warn("failed to get renderer for startup resource", "error", err)
+		return a, nil
+	}
+	// DAO is optional - DetailView handles nil gracefully (just disables refresh).
+	// Unlike renderer which is required for display, DAO only enables refresh functionality.
+	d, err := a.registry.GetDAO(a.ctx, a.startupPath.Service, a.startupPath.ResourceType)
+	if err != nil {
+		log.Warn("failed to get DAO for startup resource", "error", err)
+	}
+	detailView := view.NewDetailView(a.ctx, msg.resource, renderer, a.startupPath.Service, a.startupPath.ResourceType, a.registry, d)
+	a.viewStack = append(a.viewStack, a.currentView)
+	a.currentView = detailView
+	return a, tea.Batch(detailView.Init(), detailView.SetSize(a.width, a.height-2))
+}
+
+func (a *App) delegateToCurrentView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.currentView == nil {
+		return a, nil
+	}
+	model, cmd := a.currentView.Update(msg)
+	if v, ok := model.(view.View); ok {
+		a.currentView = v
+	}
+	return a, cmd
 }
 
 // newAltScreenView creates a View with AltScreen and mouse support enabled
