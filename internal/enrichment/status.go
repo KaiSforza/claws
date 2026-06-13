@@ -1,7 +1,10 @@
 package enrichment
 
-import apperrors "github.com/clawscli/claws/internal/errors"
-import "slices"
+import (
+	"slices"
+
+	apperrors "github.com/clawscli/claws/internal/errors"
+)
 
 // Status describes whether optional resource details were fetched and why they
 // may be unavailable.
