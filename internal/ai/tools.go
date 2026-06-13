@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	appaws "github.com/clawscli/claws/internal/aws"
 	appconfig "github.com/clawscli/claws/internal/config"
 	"github.com/clawscli/claws/internal/dao"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/log"
 	"github.com/clawscli/claws/internal/registry"
 	"github.com/clawscli/claws/internal/sanitize"
@@ -41,13 +43,12 @@ type ToolExecutor struct {
 var (
 	docsSearchARNPattern       = regexp.MustCompile(`\barn:[^\s]+`)
 	docsSearchAccountIDPattern = regexp.MustCompile(`\b\d{12}\b`)
+	errScopeViolation          = errors.New("AI context scope violation")
+	errToolInput               = errors.New("invalid tool input")
+	errToolExecution           = errors.New("AI tool execution failed")
 )
 
-func NewToolExecutor(_ context.Context, reg *registry.Registry, contexts ...*Context) (*ToolExecutor, error) {
-	var aiCtx *Context
-	if len(contexts) > 0 {
-		aiCtx = contexts[0]
-	}
+func NewToolExecutor(_ context.Context, reg *registry.Registry, aiCtx *Context) (*ToolExecutor, error) {
 	return &ToolExecutor{
 		registry: reg,
 		aiCtx:    aiCtx,
@@ -60,26 +61,30 @@ func (e *ToolExecutor) validateScope(service, resourceType, region, profile, id,
 		return profile, cluster, nil
 	}
 	if ctx.Service != "" && service != ctx.Service {
-		return "", "", fmt.Errorf("service %s is outside the current AI context", service)
+		return "", "", scopeViolation("service", service)
 	}
 	if ctx.ResourceType != "" && resourceType != ctx.ResourceType {
-		return "", "", fmt.Errorf("resource type %s is outside the current AI context", resourceType)
+		return "", "", scopeViolation("resource type", resourceType)
 	}
 	if region != "" && !regionAllowed(ctx, region) {
-		return "", "", fmt.Errorf("region %s is outside the current AI context", region)
+		return "", "", scopeViolation("region", region)
 	}
 	profile = defaultProfile(ctx, profile)
 	if profile != "" && !profileAllowed(ctx, profile) {
-		return "", "", fmt.Errorf("profile %s is outside the current AI context", profile)
+		return "", "", scopeViolation("profile", profile)
 	}
 	if id != "" && !resourceAllowed(ctx, id) {
-		return "", "", fmt.Errorf("resource %s is outside the current AI context", id)
+		return "", "", scopeViolation("resource", id)
 	}
 	cluster = defaultCluster(ctx, cluster)
 	if cluster != "" && !clusterAllowed(ctx, cluster) {
-		return "", "", fmt.Errorf("cluster %s is outside the current AI context", cluster)
+		return "", "", scopeViolation("cluster", cluster)
 	}
 	return profile, cluster, nil
+}
+
+func scopeViolation(kind, value string) error {
+	return apperrors.Wrapf(errScopeViolation, "%s %s is outside the current AI context", kind, value)
 }
 
 func defaultProfile(ctx *Context, profile string) string {
@@ -348,65 +353,133 @@ func (e *ToolExecutor) Execute(ctx context.Context, call *ToolUseContent) ToolRe
 		}
 	}
 
-	var content string
-	var isError bool
-
-	switch call.Name {
-	case "list_resources":
-		service, _ := call.Input["service"].(string)
-		content = e.listResources(service)
-	case "query_resources":
-		service, _ := call.Input["service"].(string)
-		resourceType, _ := call.Input["resource_type"].(string)
-		region, _ := call.Input["region"].(string)
-		profile, _ := call.Input["profile"].(string)
-		includeResolved, _ := call.Input["include_resolved"].(bool)
-		limit, _ := call.Input["limit"].(float64)
-		offset, _ := call.Input["offset"].(float64)
-		content, isError = e.queryResources(ctx, service, resourceType, region, profile, includeResolved, int(limit), int(offset))
-	case "get_resource_detail":
-		service, _ := call.Input["service"].(string)
-		resourceType, _ := call.Input["resource_type"].(string)
-		region, _ := call.Input["region"].(string)
-		id, _ := call.Input["id"].(string)
-		cluster, _ := call.Input["cluster"].(string)
-		profile, _ := call.Input["profile"].(string)
-		content, isError = e.getResourceDetail(ctx, service, resourceType, region, id, cluster, profile)
-	case "tail_logs":
-		service, _ := call.Input["service"].(string)
-		resourceType, _ := call.Input["resource_type"].(string)
-		region, _ := call.Input["region"].(string)
-		id, _ := call.Input["id"].(string)
-		cluster, _ := call.Input["cluster"].(string)
-		profile, _ := call.Input["profile"].(string)
-		filter, _ := call.Input["filter"].(string)
-		since, _ := call.Input["since"].(string)
-		limit, _ := call.Input["limit"].(float64)
-		content, isError = e.tailLogs(ctx, service, resourceType, region, id, cluster, profile, filter, since, int(limit))
-	case "search_aws_docs":
-		query, _ := call.Input["query"].(string)
-		var err error
-		query, err = e.prepareDocsSearchQuery(query)
-		if err != nil {
-			content = "Error: " + err.Error()
-			isError = true
-		} else {
-			content = e.runDocsSearch(ctx, query)
-		}
-	default:
-		content = fmt.Sprintf("Unknown tool: %s", call.Name)
-		isError = true
-	}
-
-	if isPrivateDataTool(call.Name) && isError {
-		content = e.redactPrivateToolOutput(content)
-	}
-
-	return ToolResultContent{
+	content, isError := e.executeTool(ctx, call)
+	return e.redactOutput(call.Name, ToolResultContent{
 		ToolUseID: call.ID,
 		Content:   content,
 		IsError:   isError,
+	})
+}
+
+func (e *ToolExecutor) executeTool(ctx context.Context, call *ToolUseContent) (string, bool) {
+	switch call.Name {
+	case "list_resources":
+		return e.executeListResources(call.Input)
+	case "query_resources":
+		return e.executeQueryResources(ctx, call.Input)
+	case "get_resource_detail":
+		return e.executeGetResourceDetail(ctx, call.Input)
+	case "tail_logs":
+		return e.executeTailLogs(ctx, call.Input)
+	case "search_aws_docs":
+		return e.executeSearchDocs(ctx, call.Input)
+	default:
+		return fmt.Sprintf("Unknown tool: %s", call.Name), true
 	}
+}
+
+func (e *ToolExecutor) executeListResources(input map[string]any) (string, bool) {
+	service, err := stringInput(input, "service")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	return e.listResources(service), false
+}
+
+func (e *ToolExecutor) executeQueryResources(ctx context.Context, input map[string]any) (string, bool) {
+	service, err := stringInput(input, "service")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	resourceType, err := stringInput(input, "resource_type")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	region, err := stringInput(input, "region")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	profile, err := stringInput(input, "profile")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	includeResolved, _ := input["include_resolved"].(bool)
+	limit, _ := input["limit"].(float64)
+	offset, _ := input["offset"].(float64)
+	return e.queryResources(ctx, service, resourceType, region, profile, includeResolved, int(limit), int(offset))
+}
+
+func (e *ToolExecutor) executeGetResourceDetail(ctx context.Context, input map[string]any) (string, bool) {
+	service, resourceType, region, id, cluster, profile, err := resourceInput(input)
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	return e.getResourceDetail(ctx, service, resourceType, region, id, cluster, profile)
+}
+
+func (e *ToolExecutor) executeTailLogs(ctx context.Context, input map[string]any) (string, bool) {
+	service, resourceType, region, id, cluster, profile, err := resourceInput(input)
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	filter, err := stringInput(input, "filter")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	since, err := stringInput(input, "since")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	limit, _ := input["limit"].(float64)
+	return e.tailLogs(ctx, service, resourceType, region, id, cluster, profile, filter, since, int(limit))
+}
+
+func (e *ToolExecutor) executeSearchDocs(ctx context.Context, input map[string]any) (string, bool) {
+	query, err := stringInput(input, "query")
+	if err != nil {
+		return inputErrorResult(err)
+	}
+	query, err = e.prepareDocsSearchQuery(query)
+	if err != nil {
+		return "Error: " + err.Error(), true
+	}
+	return e.runDocsSearch(ctx, query), false
+}
+
+func resourceInput(input map[string]any) (service, resourceType, region, id, cluster, profile string, err error) {
+	if service, err = stringInput(input, "service"); err != nil {
+		return
+	}
+	if resourceType, err = stringInput(input, "resource_type"); err != nil {
+		return
+	}
+	if region, err = stringInput(input, "region"); err != nil {
+		return
+	}
+	if id, err = stringInput(input, "id"); err != nil {
+		return
+	}
+	if cluster, err = stringInput(input, "cluster"); err != nil {
+		return
+	}
+	profile, err = stringInput(input, "profile")
+	return
+}
+
+func stringInput(input map[string]any, key string) (string, error) {
+	value, ok := input[key]
+	if !ok || value == nil {
+		return "", nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", apperrors.Wrapf(errToolInput, "%s parameter must be a string", key)
+	}
+	return text, nil
+}
+
+func inputErrorResult(err error) (string, bool) {
+	return "Error: " + err.Error(), true
 }
 
 func isPrivateDataTool(toolName string) bool {
@@ -416,6 +489,13 @@ func isPrivateDataTool(toolName string) bool {
 	default:
 		return false
 	}
+}
+
+func (e *ToolExecutor) redactOutput(toolName string, result ToolResultContent) ToolResultContent {
+	if isPrivateDataTool(toolName) && result.IsError {
+		result.Content = e.redactPrivateToolOutput(result.Content)
+	}
+	return result
 }
 
 func (e *ToolExecutor) runDocsSearch(ctx context.Context, query string) string {
@@ -428,23 +508,27 @@ func (e *ToolExecutor) runDocsSearch(ctx context.Context, query string) string {
 func (e *ToolExecutor) prepareDocsSearchQuery(query string) (string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return "", fmt.Errorf("query parameter is required")
+		return "", apperrors.Wrap(errToolInput, "query parameter is required")
 	}
 	if sanitized := e.redactPrivateDocsSearchQuery(query); sanitized != query {
-		return "", fmt.Errorf("AWS documentation search query contains private or sensitive context; ask a general AWS documentation question without resource IDs, account IDs, ARNs, profile names, logs, tags, or secrets")
+		return "", apperrors.Wrap(errToolInput, "AWS documentation search query contains private or sensitive context; ask a general AWS documentation question without resource IDs, account IDs, ARNs, profile names, logs, tags, or secrets")
 	}
 	return query, nil
 }
 
 func (e *ToolExecutor) redactPrivateDocsSearchQuery(query string) string {
-	redacted := sanitize.SensitiveText(query)
-	redacted = docsSearchARNPattern.ReplaceAllString(redacted, sanitize.Redacted)
-	redacted = docsSearchAccountIDPattern.ReplaceAllString(redacted, sanitize.Redacted)
-	return redactDocsSearchContextValues(redacted, e.aiCtx)
+	return e.redactPrivateText(query)
 }
 
 func (e *ToolExecutor) redactPrivateToolOutput(output string) string {
-	return e.redactPrivateDocsSearchQuery(output)
+	return e.redactPrivateText(output)
+}
+
+func (e *ToolExecutor) redactPrivateText(text string) string {
+	redacted := sanitize.SensitiveText(text)
+	redacted = docsSearchARNPattern.ReplaceAllString(redacted, sanitize.Redacted)
+	redacted = docsSearchAccountIDPattern.ReplaceAllString(redacted, sanitize.Redacted)
+	return redactDocsSearchContextValues(redacted, e.aiCtx)
 }
 
 func redactDocsSearchContextValues(query string, ctx *Context) string {
@@ -460,13 +544,19 @@ func redactDocsSearchContextValues(query string, ctx *Context) string {
 	values = append(values, ctx.UserProfiles...)
 	values = append(values, resourceRefPrivateValues(ctx.DiffLeft)...)
 	values = append(values, resourceRefPrivateValues(ctx.DiffRight)...)
+	seen := make(map[string]bool, len(values))
+	pairs := make([]string, 0, len(values)*2)
 	for _, value := range values {
-		if value == "" {
+		if value == "" || seen[value] {
 			continue
 		}
-		query = strings.ReplaceAll(query, value, sanitize.Redacted)
+		seen[value] = true
+		pairs = append(pairs, value, sanitize.Redacted)
 	}
-	return query
+	if len(pairs) == 0 {
+		return query
+	}
+	return strings.NewReplacer(pairs...).Replace(query)
 }
 
 func resourceRefPrivateValues(ref *ResourceRef) []string {
@@ -701,16 +791,16 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		td, ok := resource.(*taskdefinitions.TaskDefinitionResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for task-definitions")
+			return "", toolExecutionError("unexpected resource type for task-definitions")
 		}
 		if logGroup := td.GetCloudWatchLogGroup(""); logGroup != "" {
 			return logGroup, nil
 		}
-		return "", fmt.Errorf("no CloudWatch logs configured for task definition %s", id)
+		return "", toolExecutionError("no CloudWatch logs configured for task definition %s", id)
 
 	case "ecs/services":
 		if cluster == "" {
-			return "", fmt.Errorf("cluster parameter is required for ecs/services")
+			return "", toolExecutionError("cluster parameter is required for ecs/services")
 		}
 		ctxWithCluster := dao.WithFilter(ctx, "ClusterName", cluster)
 		resource, err := e.getResource(ctxWithCluster, service, resourceType, id)
@@ -719,17 +809,17 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		svc, ok := resource.(*ecsservices.ServiceResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for ecs services")
+			return "", toolExecutionError("unexpected resource type for ecs services")
 		}
 		taskDefArn := svc.TaskDefinition()
 		if taskDefArn == "" {
-			return "", fmt.Errorf("no task definition found for service %s", id)
+			return "", toolExecutionError("no task definition found for service %s", id)
 		}
 		return e.extractLogGroupFromTaskDef(ctx, taskDefArn)
 
 	case "ecs/tasks":
 		if cluster == "" {
-			return "", fmt.Errorf("cluster parameter is required for ecs/tasks")
+			return "", toolExecutionError("cluster parameter is required for ecs/tasks")
 		}
 		ctxWithCluster := dao.WithFilter(ctx, "ClusterName", cluster)
 		resource, err := e.getResource(ctxWithCluster, service, resourceType, id)
@@ -738,11 +828,11 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		task, ok := resource.(*ecstasks.TaskResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for ecs tasks")
+			return "", toolExecutionError("unexpected resource type for ecs tasks")
 		}
 		taskDefArn := task.TaskDefinitionArn()
 		if taskDefArn == "" {
-			return "", fmt.Errorf("no task definition found for task %s", id)
+			return "", toolExecutionError("no task definition found for task %s", id)
 		}
 		return e.extractLogGroupFromTaskDef(ctx, taskDefArn)
 
@@ -753,7 +843,7 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		proj, ok := resource.(*codebuildprojects.ProjectResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for codebuild projects")
+			return "", toolExecutionError("unexpected resource type for codebuild projects")
 		}
 		if proj.Project.LogsConfig != nil &&
 			proj.Project.LogsConfig.CloudWatchLogs != nil &&
@@ -769,12 +859,12 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		build, ok := resource.(*codebuildbuilds.BuildResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for codebuild builds")
+			return "", toolExecutionError("unexpected resource type for codebuild builds")
 		}
 		if build.LogsGroupName() != "" {
 			return build.LogsGroupName(), nil
 		}
-		return "", fmt.Errorf("no CloudWatch logs configured for build %s", id)
+		return "", toolExecutionError("no CloudWatch logs configured for build %s", id)
 
 	case "cloudtrail/trails":
 		resource, err := e.getResource(ctx, service, resourceType, id)
@@ -783,11 +873,11 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		trail, ok := resource.(*cloudtrailtrails.TrailResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for cloudtrail trails")
+			return "", toolExecutionError("unexpected resource type for cloudtrail trails")
 		}
 		logGroupArn := trail.CloudWatchLogsLogGroupArn()
 		if logGroupArn == "" {
-			return "", fmt.Errorf("no CloudWatch logs configured for trail %s", id)
+			return "", toolExecutionError("no CloudWatch logs configured for trail %s", id)
 		}
 		return extractLogGroupNameFromArn(logGroupArn), nil
 
@@ -798,11 +888,11 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		stage, ok := resource.(*apigatewayStages.StageResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for apigateway stages")
+			return "", toolExecutionError("unexpected resource type for apigateway stages")
 		}
 		destArn := stage.AccessLogDestination()
 		if destArn == "" {
-			return "", fmt.Errorf("no access logs configured for stage %s", id)
+			return "", toolExecutionError("no access logs configured for stage %s", id)
 		}
 		return extractLogGroupNameFromArn(destArn), nil
 
@@ -813,11 +903,11 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		stage, ok := resource.(*apigatewayStagesV2.StageV2Resource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for apigateway stages-v2")
+			return "", toolExecutionError("unexpected resource type for apigateway stages-v2")
 		}
 		destArn := stage.AccessLogDestination()
 		if destArn == "" {
-			return "", fmt.Errorf("no access logs configured for stage %s", id)
+			return "", toolExecutionError("no access logs configured for stage %s", id)
 		}
 		return extractLogGroupNameFromArn(destArn), nil
 
@@ -828,7 +918,7 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 		}
 		sm, ok := resource.(*sfnStateMachines.StateMachineResource)
 		if !ok {
-			return "", fmt.Errorf("unexpected resource type for stepfunctions state-machines")
+			return "", toolExecutionError("unexpected resource type for stepfunctions state-machines")
 		}
 		if sm.Detail != nil && sm.Detail.LoggingConfiguration != nil {
 			for _, dest := range sm.Detail.LoggingConfiguration.Destinations {
@@ -837,10 +927,10 @@ func (e *ToolExecutor) extractLogGroup(ctx context.Context, service, resourceTyp
 				}
 			}
 		}
-		return "", fmt.Errorf("no CloudWatch logs configured for state machine %s", id)
+		return "", toolExecutionError("no CloudWatch logs configured for state machine %s", id)
 
 	default:
-		return "", fmt.Errorf("log extraction not supported for %s/%s. Supported: lambda/functions, ecs/services, ecs/tasks, ecs/task-definitions, codebuild/projects, codebuild/builds, cloudtrail/trails, apigateway/stages, apigateway/stages-v2, stepfunctions/state-machines", service, resourceType)
+		return "", toolExecutionError("log extraction not supported for %s/%s. Supported: lambda/functions, ecs/services, ecs/tasks, ecs/task-definitions, codebuild/projects, codebuild/builds, cloudtrail/trails, apigateway/stages, apigateway/stages-v2, stepfunctions/state-machines", service, resourceType)
 	}
 }
 
@@ -848,19 +938,23 @@ func (e *ToolExecutor) extractLogGroupFromTaskDef(ctx context.Context, taskDefAr
 	taskDefID := appaws.ExtractResourceName(taskDefArn)
 	resource, err := e.getResource(ctx, "ecs", "task-definitions", taskDefID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get task definition %s: %w", taskDefArn, err)
+		return "", apperrors.Wrapf(err, "failed to get task definition %s", taskDefArn)
 	}
 
 	td, ok := resource.(*taskdefinitions.TaskDefinitionResource)
 	if !ok {
-		return "", fmt.Errorf("unexpected resource type")
+		return "", toolExecutionError("unexpected resource type")
 	}
 
 	if logGroup := td.GetCloudWatchLogGroup(""); logGroup != "" {
 		return logGroup, nil
 	}
 
-	return "", fmt.Errorf("no CloudWatch logs configured in task definition %s", taskDefArn)
+	return "", toolExecutionError("no CloudWatch logs configured in task definition %s", taskDefArn)
+}
+
+func toolExecutionError(format string, args ...any) error {
+	return apperrors.Wrapf(errToolExecution, format, args...)
 }
 
 func extractLogGroupNameFromArn(arn string) string {

@@ -378,6 +378,25 @@ func TestToolExecuteSearchDocsEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestToolExecuteSearchDocsRejectsNonStringQuery(t *testing.T) {
+	executor := &ToolExecutor{registry: nil}
+
+	result := executor.Execute(context.TODO(), &ToolUseContent{
+		ID:   "test-123",
+		Name: "search_aws_docs",
+		Input: map[string]any{
+			"query": 123,
+		},
+	})
+
+	if !result.IsError {
+		t.Fatal("expected non-string query to fail")
+	}
+	if !strings.Contains(result.Content, "query parameter must be a string") {
+		t.Fatalf("expected explicit query type error, got %q", result.Content)
+	}
+}
+
 func TestPrepareDocsSearchQueryAllowsGeneralQueryBeforeAWSData(t *testing.T) {
 	executor := &ToolExecutor{
 		aiCtx: &Context{
