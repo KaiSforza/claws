@@ -36,6 +36,36 @@ func TestLogTextRedactsCommonSecretAssignments(t *testing.T) {
 			input:  `{"token": "plain-secret"}`,
 			secret: "plain-secret",
 		},
+		{
+			name:   "json camel case access token",
+			input:  `{"accessToken":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json camel case refresh token",
+			input:  `{"refreshToken":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json camel case session token",
+			input:  `{"sessionToken":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json camel case client secret",
+			input:  `{"clientSecret":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json snake case client secret",
+			input:  `{"client_secret":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json camel case secret key",
+			input:  `{"secretKey":"plain-secret"}`,
+			secret: "plain-secret",
+		},
 	}
 
 	for _, tt := range tests {
@@ -58,6 +88,17 @@ func TestLogTextRemovesTerminalEscapeSequences(t *testing.T) {
 	}
 	if !strings.Contains(got, "ok red") {
 		t.Fatalf("LogText removed visible text, got %q", got)
+	}
+}
+
+func TestMultilineTerminalTextPreservesLineBreaks(t *testing.T) {
+	input := "line1\nline2\tvalue\x1b[31mred\x1b[0m\rreturn"
+	got := MultilineTerminalText(input)
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\r") {
+		t.Fatalf("MultilineTerminalText left terminal control sequence in %q", got)
+	}
+	if !strings.Contains(got, "line1\nline2\tvalueredreturn") {
+		t.Fatalf("MultilineTerminalText removed expected multiline text, got %q", got)
 	}
 }
 

@@ -21,6 +21,8 @@ type MockView struct {
 	hasInput    bool
 	escReceived bool
 	lastKey     string
+	lastMouse   tea.MouseClickMsg
+	mouseSeen   bool
 }
 
 func (m *MockView) Init() tea.Cmd                     { return nil }
@@ -41,6 +43,10 @@ func (m *MockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.escReceived = true
 			m.hasInput = false // Close input on esc
 		}
+	}
+	if mouseMsg, ok := msg.(tea.MouseClickMsg); ok {
+		m.lastMouse = mouseMsg
+		m.mouseSeen = true
 	}
 	return m, nil
 }
@@ -538,6 +544,37 @@ func TestUnhandledKeyDelegatesToCurrentView(t *testing.T) {
 	}
 	if app.modal != nil {
 		t.Error("Expected no modal for unhandled key")
+	}
+}
+
+func TestMouseClickDelegatesToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	click := tea.MouseClickMsg{X: 12, Y: 4, Button: tea.MouseLeft}
+	app.Update(click)
+
+	if !dashboard.mouseSeen {
+		t.Fatal("Expected mouse click to reach current view")
+	}
+	if dashboard.lastMouse != click {
+		t.Fatalf("Expected mouse click %v, got %v", click, dashboard.lastMouse)
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView unchanged, got %T", app.currentView)
+	}
+}
+
+func TestMouseBackDoesNotDelegateToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	app.Update(tea.MouseClickMsg{X: 12, Y: 4, Button: tea.MouseBackward})
+
+	if dashboard.mouseSeen {
+		t.Fatal("Expected mouse back button to be handled by app navigation")
 	}
 }
 

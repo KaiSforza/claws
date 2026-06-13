@@ -1,8 +1,28 @@
 package clipboard
 
 import (
+	"errors"
+	"strings"
 	"testing"
 )
+
+type failingStringWriter struct{}
+
+func (failingStringWriter) WriteString(string) (int, error) {
+	return 0, errors.New("terminal clipboard unavailable")
+}
+
+func withClipboardWriters(t *testing.T, terminalWriter interface{ WriteString(string) (int, error) }, nativeWriter func(string) error) {
+	t.Helper()
+	originalTerminalWriter := terminalClipboardWriter
+	originalNativeWrite := nativeClipboardWrite
+	terminalClipboardWriter = terminalWriter
+	nativeClipboardWrite = nativeWriter
+	t.Cleanup(func() {
+		terminalClipboardWriter = originalTerminalWriter
+		nativeClipboardWrite = originalNativeWrite
+	})
+}
 
 func TestCopiedMsg(t *testing.T) {
 	msg := CopiedMsg{Label: "ID", Value: "i-1234567890abcdef0"}
@@ -15,6 +35,9 @@ func TestCopiedMsg(t *testing.T) {
 }
 
 func TestCopy(t *testing.T) {
+	var terminal strings.Builder
+	withClipboardWriters(t, &terminal, func(string) error { return nil })
+
 	cmd := Copy("TestLabel", "TestValue")
 	if cmd == nil {
 		t.Fatal("Copy should return a non-nil command")
@@ -33,7 +56,39 @@ func TestCopy(t *testing.T) {
 	}
 }
 
+func TestCopyReturnsCopiedWhenNativeClipboardFailsButOSC52Succeeds(t *testing.T) {
+	var terminal strings.Builder
+	withClipboardWriters(t, &terminal, func(string) error { return errors.New("native clipboard unavailable") })
+
+	msg := Copy("ID", "i-123")()
+	if _, ok := msg.(CopiedMsg); !ok {
+		t.Fatalf("expected CopiedMsg when OSC52 succeeds, got %T", msg)
+	}
+	if terminal.String() == "" {
+		t.Fatal("expected OSC52 data to be written")
+	}
+}
+
+func TestCopyReturnsFailureWhenAllClipboardWritesFail(t *testing.T) {
+	withClipboardWriters(t, failingStringWriter{}, func(string) error { return errors.New("native clipboard unavailable") })
+
+	msg := Copy("ID", "i-123")()
+	failedMsg, ok := msg.(CopyFailedMsg)
+	if !ok {
+		t.Fatalf("expected CopyFailedMsg, got %T", msg)
+	}
+	if failedMsg.Label != "ID" || failedMsg.Value != "i-123" {
+		t.Fatalf("failure msg = %+v, want label/value preserved", failedMsg)
+	}
+	if failedMsg.Err == nil {
+		t.Fatal("expected failure error")
+	}
+}
+
 func TestCopyID(t *testing.T) {
+	var terminal strings.Builder
+	withClipboardWriters(t, &terminal, func(string) error { return nil })
+
 	cmd := CopyID("i-1234567890abcdef0")
 	if cmd == nil {
 		t.Fatal("CopyID should return a non-nil command")
@@ -53,6 +108,9 @@ func TestCopyID(t *testing.T) {
 }
 
 func TestCopyARN(t *testing.T) {
+	var terminal strings.Builder
+	withClipboardWriters(t, &terminal, func(string) error { return nil })
+
 	arn := "arn:aws:ec2:us-east-1:123456789012:instance/i-1234567890abcdef0"
 	cmd := CopyARN(arn)
 	if cmd == nil {

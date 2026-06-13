@@ -3,7 +3,10 @@ package aws
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	appconfig "github.com/clawscli/claws/internal/config"
 )
 
 func TestLoadProfilesSkipsInvalidProfileNames(t *testing.T) {
@@ -119,5 +122,39 @@ func TestSSOSessionInfoMergePreservesProfileValues(t *testing.T) {
 	}
 	if scopes != session.scopes {
 		t.Fatalf("fallback scopes = %q", scopes)
+	}
+}
+
+func TestLoadProfilesWarnsOnParseFailure(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	credentialsPath := filepath.Join(dir, "credentials")
+
+	if err := os.WriteFile(configPath, []byte("[profile broken\nregion = us-east-1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(credentialsPath, nil, 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+
+	t.Setenv("AWS_CONFIG_FILE", configPath)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentialsPath)
+
+	before := len(appconfig.Global().Warnings())
+	profiles, err := LoadProfiles()
+	if err != nil {
+		t.Fatalf("LoadProfiles() returned error: %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("profiles = %+v, want none from malformed config", profiles)
+	}
+
+	warnings := appconfig.Global().Warnings()
+	if len(warnings) <= before {
+		t.Fatalf("warnings length = %d, want > %d", len(warnings), before)
+	}
+	got := warnings[len(warnings)-1]
+	if !strings.Contains(got, "Failed to parse AWS config file") || !strings.Contains(got, configPath) {
+		t.Fatalf("warning = %q, want config parse warning with path", got)
 	}
 }

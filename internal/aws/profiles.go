@@ -2,6 +2,7 @@ package aws
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -70,6 +71,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	cfg, err := ini.Load(configPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Debug("failed to parse aws config", "path", configPath, "error", err)
+		appconfig.Global().AddWarning(formatProfileParseWarning("config", configPath, err))
 	}
 	if err == nil {
 		ssoSessions := make(map[string]ssoSessionInfo)
@@ -142,6 +144,7 @@ func LoadProfiles() ([]ProfileInfo, error) {
 	creds, err := ini.Load(credPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Debug("failed to parse aws credentials", "path", credPath, "error", err)
+		appconfig.Global().AddWarning(formatProfileParseWarning("credentials", credPath, err))
 	}
 	if err == nil {
 		for _, section := range creds.Sections() {
@@ -184,6 +187,10 @@ func LoadProfiles() ([]ProfileInfo, error) {
 		profiles = append(profiles, *profileMap[name])
 	}
 	return profiles, nil
+}
+
+func formatProfileParseWarning(kind, path string, err error) string {
+	return fmt.Sprintf("Failed to parse AWS %s file %s: %v", kind, path, err)
 }
 
 func determineProfileType(info *ProfileInfo) string {

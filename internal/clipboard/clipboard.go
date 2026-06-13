@@ -5,6 +5,8 @@ package clipboard
 
 import (
 	"encoding/base64"
+	"errors"
+	"io"
 	"os"
 	"strings"
 
@@ -23,13 +25,32 @@ type CopiedMsg struct {
 // NoARNMsg is sent when attempting to copy an ARN for a resource that has no ARN.
 type NoARNMsg struct{}
 
+// CopyFailedMsg is sent when neither OSC52 nor native clipboard writes succeed.
+type CopyFailedMsg struct {
+	Label string
+	Value string
+	Err   error
+}
+
+var (
+	terminalClipboardWriter io.StringWriter = os.Stdout
+	nativeClipboardWrite                    = clipboard.WriteAll
+)
+
 // Copy copies the given value to the clipboard and returns a tea.Cmd that sends a CopiedMsg.
 // It writes to both OSC52 (terminal clipboard) and native system clipboard for maximum compatibility.
 func Copy(label, value string) tea.Cmd {
 	return func() tea.Msg {
-		writeOSC52(value)
-		if err := clipboard.WriteAll(value); err != nil {
-			log.Debug("native clipboard write failed", "error", err)
+		oscErr := writeOSC52(value)
+		if oscErr != nil {
+			log.Debug("OSC52 clipboard write failed", "error", oscErr)
+		}
+		nativeErr := nativeClipboardWrite(value)
+		if nativeErr != nil {
+			log.Debug("native clipboard write failed", "error", nativeErr)
+		}
+		if oscErr != nil && nativeErr != nil {
+			return CopyFailedMsg{Label: label, Value: value, Err: errors.Join(oscErr, nativeErr)}
 		}
 		return CopiedMsg{Label: label, Value: value}
 	}
@@ -37,7 +58,7 @@ func Copy(label, value string) tea.Cmd {
 
 // writeOSC52 writes the value to the terminal clipboard using OSC52 escape sequences.
 // It automatically detects and wraps sequences for tmux and screen terminal multiplexers.
-func writeOSC52(s string) {
+func writeOSC52(s string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(s))
 	osc52 := "\x1b]52;c;" + encoded + "\x07"
 
@@ -49,9 +70,8 @@ func writeOSC52(s string) {
 	} else {
 		seq = osc52
 	}
-	if _, err := os.Stdout.WriteString(seq); err != nil {
-		log.Debug("OSC52 clipboard write failed", "error", err)
-	}
+	_, err := terminalClipboardWriter.WriteString(seq)
+	return err
 }
 
 // CopyID copies a resource ID to the clipboard.

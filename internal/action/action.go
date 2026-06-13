@@ -162,6 +162,14 @@ var ReadOnlyAllowlist = map[string]bool{
 	"DetectStackDrift": true,
 	// InvokeFunctionDryRun: Validation mode, function is not actually invoked
 	"InvokeFunctionDryRun": true,
+	// ViewParameterValue: Reads and displays a single SSM parameter value only
+	"ViewParameterValue": true,
+	// ViewParameterHistory: Reads and displays SSM parameter history only
+	"ViewParameterHistory": true,
+	// ViewSecretValue: Reads and displays a single Secrets Manager value only
+	"ViewSecretValue": true,
+	// DescribeSecret: Reads and displays Secrets Manager metadata only
+	"DescribeSecret": true,
 }
 
 var ReadOnlyExecAllowlist = map[string]bool{

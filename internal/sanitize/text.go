@@ -8,7 +8,11 @@ import (
 
 const Redacted = "[REDACTED]"
 
-var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(["']?)((?:aws[_-]?)?secret[_-]?access[_-]?key|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key(?:[_-]?id)?|credential)(["']?)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)`)
+const sensitiveKeyPattern = `(?:aws[_-]?)?secret[_-]?access[_-]?key|password|passwd|pwd|secret|token|` +
+	`api[_-]?key|access[_-]?key(?:[_-]?id)?|access[_-]?token|refresh[_-]?token|` +
+	`session[_-]?token|id[_-]?token|client[_-]?secret|secret[_-]?key|credential`
+
+var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(["']?)(` + sensitiveKeyPattern + `)(["']?)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)`)
 var uriCredentialPattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@`)
 var bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}`)
 var basicCredentialPattern = regexp.MustCompile(`\b[Bb]asic\s+[A-Za-z0-9+/=]*[A-Z0-9+/=][A-Za-z0-9+/=]{7,}`)
@@ -22,6 +26,22 @@ func TerminalText(s string) string {
 	s = ansiEscapePattern.ReplaceAllString(s, "")
 	return strings.Map(func(r rune) rune {
 		if r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// MultilineTerminalText removes terminal control sequences while preserving line breaks.
+// Use this for trusted-display bodies such as JSON documents and intentionally viewed secret values.
+func MultilineTerminalText(s string) string {
+	s = ansiEscapePattern.ReplaceAllString(s, "")
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\t':
 			return r
 		}
 		if unicode.IsControl(r) {

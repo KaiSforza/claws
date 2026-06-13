@@ -353,3 +353,21 @@ func TestProfileSelectorLoginResultDisplayCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestProfileSelectorDisplaysLoadWarnings(t *testing.T) {
+	selector := NewProfileSelector()
+	selector.SetSize(100, 50)
+
+	selector.Update(profilesLoadedMsg{
+		profiles: []profileItem{{id: config.ProfileIDSDKDefault, display: "SDK Default"}},
+		warnings: []string{"Failed to parse AWS config file /tmp/config: broken section"},
+	})
+
+	view := selector.ViewString()
+	if !strings.Contains(view, "Failed to parse AWS config file /tmp/config") {
+		t.Fatalf("ViewString() = %q, want parse warning", view)
+	}
+	if selector.selector.extraHeight != 1 {
+		t.Fatalf("extraHeight = %d, want 1 for warning", selector.selector.extraHeight)
+	}
+}

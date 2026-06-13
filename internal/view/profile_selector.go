@@ -40,6 +40,7 @@ type ProfileSelector struct {
 	ssoLogin    ssoLoginRunner
 
 	loginResult *loginResultMsg
+	warnings    []string
 	typeStyle   lipgloss.Style
 	regionStyle lipgloss.Style
 }
@@ -81,6 +82,7 @@ func (p *ProfileSelector) Init() tea.Cmd {
 type profilesLoadedMsg struct {
 	profiles []profileItem
 	infoMap  map[string]aws.ProfileInfo
+	warnings []string
 }
 
 type loginResultMsg struct {
@@ -136,10 +138,12 @@ func (p *ProfileSelector) loadProfiles() tea.Msg {
 	}
 	infoMap := make(map[string]aws.ProfileInfo)
 
+	existingWarnings := config.Global().Warnings()
 	loaded, err := aws.LoadProfiles()
 	if err != nil {
 		log.Error("failed to load profiles", "error", err)
 	}
+	warnings := newWarnings(existingWarnings, config.Global().Warnings())
 	for _, info := range loaded {
 		profiles = append(profiles, profileItem{
 			id:          info.Name,
@@ -151,7 +155,14 @@ func (p *ProfileSelector) loadProfiles() tea.Msg {
 		infoMap[info.Name] = info
 	}
 
-	return profilesLoadedMsg{profiles: profiles, infoMap: infoMap}
+	return profilesLoadedMsg{profiles: profiles, infoMap: infoMap, warnings: warnings}
+}
+
+func newWarnings(before, after []string) []string {
+	if len(after) <= len(before) {
+		return nil
+	}
+	return append([]string(nil), after[len(before):]...)
 }
 
 func (p *ProfileSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -159,7 +170,9 @@ func (p *ProfileSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case profilesLoadedMsg:
 		p.profiles = msg.profiles
 		p.profileInfo = msg.infoMap
+		p.warnings = append([]string(nil), msg.warnings...)
 		p.selector.SetItems(p.profiles)
+		p.updateExtraHeight()
 		return p, nil
 	case ThemeChangedMsg:
 		p.selector.ReloadStyles()
@@ -218,11 +231,11 @@ func (p *ProfileSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p *ProfileSelector) updateExtraHeight() {
+	extra := len(p.warnings)
 	if p.loginResult != nil {
-		p.selector.SetExtraHeight(1)
-	} else {
-		p.selector.SetExtraHeight(0)
+		extra++
 	}
+	p.selector.SetExtraHeight(extra)
 }
 
 func (p *ProfileSelector) applySelection() (tea.Model, tea.Cmd) {
@@ -367,6 +380,10 @@ func newProfileLoginExec(profileID string) (*action.SimpleExec, error) {
 
 func (p *ProfileSelector) ViewString() string {
 	content := p.selector.ViewString()
+
+	for _, warning := range p.warnings {
+		content += "\n" + ui.WarningStyle().Render("⚠ "+warning)
+	}
 
 	if p.loginResult != nil {
 		content += "\n"

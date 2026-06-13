@@ -245,6 +245,9 @@ func (a *App) handleRoutedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clipboard.CopiedMsg:
 		return a.handleClipboardCopiedMsg(msg)
 
+	case clipboard.CopyFailedMsg:
+		return a.handleClipboardCopyFailedMsg(msg)
+
 	case clipboard.NoARNMsg:
 		return a.handleClipboardNoARNMsg()
 
@@ -373,8 +376,9 @@ func (a *App) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		if cmd := a.navigateBack(); cmd != nil {
 			return a, cmd
 		}
+		return a, nil
 	}
-	return a, nil
+	return a.delegateToCurrentView(msg)
 }
 
 func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -522,6 +526,13 @@ func (a *App) handleClearErrorMsg() (tea.Model, tea.Cmd) {
 func (a *App) handleClipboardCopiedMsg(msg clipboard.CopiedMsg) (tea.Model, tea.Cmd) {
 	a.clipboardFlash = "Copied " + msg.Label
 	a.clipboardWarning = false
+	return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
+}
+
+func (a *App) handleClipboardCopyFailedMsg(msg clipboard.CopyFailedMsg) (tea.Model, tea.Cmd) {
+	log.Debug("clipboard copy failed", "label", msg.Label, "error", msg.Err)
+	a.clipboardFlash = "Copy " + msg.Label + " failed"
+	a.clipboardWarning = true
 	return a, tea.Tick(flashDuration, func(t time.Time) tea.Msg { return clearFlashMsg{} })
 }
 

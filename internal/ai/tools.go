@@ -623,7 +623,9 @@ func (e *ToolExecutor) queryResources(ctx context.Context, service, resourceType
 
 	resources, err := d.List(ctx)
 	if err != nil {
-		return fmt.Sprintf("Error listing %s/%s: %v", service, resourceType, err), true
+		if len(resources) == 0 {
+			return fmt.Sprintf("Error listing %s/%s: %v", service, resourceType, err), true
+		}
 	}
 
 	if len(resources) == 0 {
@@ -652,7 +654,16 @@ func (e *ToolExecutor) queryResources(ctx context.Context, service, resourceType
 
 	viewResources := resources[start:end]
 
-	result := fmt.Sprintf("Found %d %s/%s resources in %s%s (showing %d-%d):\n\n",
+	result := ""
+	if err != nil {
+		result += fmt.Sprintf(
+			"Partial results: listing %s/%s also returned: %s\n\n",
+			service,
+			resourceType,
+			e.redactPrivateText(err.Error()),
+		)
+	}
+	result += fmt.Sprintf("Found %d %s/%s resources in %s%s (showing %d-%d):\n\n",
 		len(resources), service, resourceType, region, filterNote, start+1, end)
 
 	for _, r := range viewResources {
@@ -724,6 +735,14 @@ func (e *ToolExecutor) tailLogs(ctx context.Context, service, resourceType, regi
 	if limit > 500 {
 		limit = 500
 	}
+	startTime := time.Now().Add(-15 * time.Minute)
+	if since != "" {
+		d, err := time.ParseDuration(since)
+		if err != nil {
+			return fmt.Sprintf("Error: invalid since duration %q: %v", since, err), true
+		}
+		startTime = time.Now().Add(-d)
+	}
 
 	if profile != "" {
 		ctx = appaws.WithSelectionOverride(ctx, appconfig.ProfileSelectionFromID(profile))
@@ -741,13 +760,6 @@ func (e *ToolExecutor) tailLogs(ctx context.Context, service, resourceType, regi
 		return fmt.Sprintf("Error creating config for region %s: %v", region, err), true
 	}
 	cwClient := cloudwatchlogs.NewFromConfig(cfg)
-
-	startTime := time.Now().Add(-15 * time.Minute)
-	if since != "" {
-		if d, err := time.ParseDuration(since); err == nil {
-			startTime = time.Now().Add(-d)
-		}
-	}
 
 	input := &cloudwatchlogs.FilterLogEventsInput{
 		LogGroupName: aws.String(logGroup),
