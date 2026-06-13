@@ -176,15 +176,9 @@ func (r *ServiceRenderer) RenderDetail(resource dao.Resource) string {
 	// Extract cluster name
 	d.Field("Cluster", appaws.ExtractResourceName(svc.ClusterArn()))
 
-	if lt := svc.LaunchType(); lt != "" {
-		d.Field("Launch Type", lt)
-	}
-	if strategy := svc.SchedulingStrategy(); strategy != "" {
-		d.Field("Scheduling Strategy", strategy)
-	}
-	if pv := svc.PlatformVersion(); pv != "" {
-		d.Field("Platform Version", pv)
-	}
+	d.FieldNonEmpty("Launch Type", svc.LaunchType())
+	d.FieldNonEmpty("Scheduling Strategy", svc.SchedulingStrategy())
+	d.FieldNonEmpty("Platform Version", svc.PlatformVersion())
 	if svc.EnableExecuteCommand() {
 		d.Field("ECS Exec", "Enabled")
 	}
@@ -340,12 +334,8 @@ func (r *ServiceRenderer) RenderDetail(resource dao.Resource) string {
 
 	// Timestamps
 	d.Section("Timestamps")
-	if created := svc.CreatedAt(); created != "" {
-		d.Field("Created", created)
-	}
-	if createdBy := svc.CreatedBy(); createdBy != "" {
-		d.Field("Created By", appaws.ExtractResourceName(createdBy))
-	}
+	d.FieldNonEmpty("Created", svc.CreatedAt())
+	d.FieldNonEmpty("Created By", appaws.ExtractResourceName(svc.CreatedBy()))
 
 	// Tags
 	d.Tags(svc.GetTags())
