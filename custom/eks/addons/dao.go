@@ -2,11 +2,12 @@ package addons
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 
+	"github.com/clawscli/claws/custom/eks/eksutil"
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
@@ -32,9 +33,9 @@ func NewAddonDAO(ctx context.Context) (dao.DAO, error) {
 }
 
 func (d *AddonDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	addonNames, err := appaws.Paginate(ctx, func(token *string) ([]string, *string, error) {
@@ -76,9 +77,9 @@ func (d *AddonDAO) List(ctx context.Context) ([]dao.Resource, error) {
 }
 
 func (d *AddonDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	output, err := d.client.DescribeAddon(ctx, &eks.DescribeAddonInput{
@@ -90,19 +91,19 @@ func (d *AddonDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if output.Addon == nil {
-		return nil, fmt.Errorf("addon not found: %s", id)
+		return nil, errors.New("addon not found: " + id)
 	}
 
 	return NewAddonResource(*output.Addon), nil
 }
 
 func (d *AddonDAO) Delete(ctx context.Context, id string) error {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return err
 	}
 
-	_, err := d.client.DeleteAddon(ctx, &eks.DeleteAddonInput{
+	_, err = d.client.DeleteAddon(ctx, &eks.DeleteAddonInput{
 		ClusterName: &clusterName,
 		AddonName:   &id,
 	})

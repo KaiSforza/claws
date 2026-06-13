@@ -2,11 +2,12 @@ package fargateprofiles
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 
+	"github.com/clawscli/claws/custom/eks/eksutil"
 	appaws "github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/dao"
 	apperrors "github.com/clawscli/claws/internal/errors"
@@ -32,9 +33,9 @@ func NewFargateProfileDAO(ctx context.Context) (dao.DAO, error) {
 }
 
 func (d *FargateProfileDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	profileNames, err := appaws.Paginate(ctx, func(token *string) ([]string, *string, error) {
@@ -76,9 +77,9 @@ func (d *FargateProfileDAO) List(ctx context.Context) ([]dao.Resource, error) {
 }
 
 func (d *FargateProfileDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return nil, fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	output, err := d.client.DescribeFargateProfile(ctx, &eks.DescribeFargateProfileInput{
@@ -90,19 +91,19 @@ func (d *FargateProfileDAO) Get(ctx context.Context, id string) (dao.Resource, e
 	}
 
 	if output.FargateProfile == nil {
-		return nil, fmt.Errorf("fargate profile not found: %s", id)
+		return nil, errors.New("fargate profile not found: " + id)
 	}
 
 	return NewFargateProfileResource(*output.FargateProfile), nil
 }
 
 func (d *FargateProfileDAO) Delete(ctx context.Context, id string) error {
-	clusterName := dao.GetFilterFromContext(ctx, "ClusterName")
-	if clusterName == "" {
-		return fmt.Errorf("ClusterName filter required")
+	clusterName, err := eksutil.RequireClusterName(ctx)
+	if err != nil {
+		return err
 	}
 
-	_, err := d.client.DeleteFargateProfile(ctx, &eks.DeleteFargateProfileInput{
+	_, err = d.client.DeleteFargateProfile(ctx, &eks.DeleteFargateProfileInput{
 		ClusterName:        &clusterName,
 		FargateProfileName: &id,
 	})

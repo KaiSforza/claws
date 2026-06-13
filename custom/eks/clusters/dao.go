@@ -2,7 +2,7 @@ package clusters
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
@@ -93,7 +93,7 @@ func (d *ClusterDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	}
 
 	if output.Cluster == nil {
-		return nil, fmt.Errorf("cluster not found: %s", id)
+		return nil, errors.New("cluster not found: " + id)
 	}
 
 	return NewClusterResource(*output.Cluster), nil
