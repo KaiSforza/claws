@@ -26,6 +26,16 @@ func TestLogTextRedactsCommonSecretAssignments(t *testing.T) {
 			input:  "secret:plain-secret",
 			secret: "plain-secret",
 		},
+		{
+			name:   "json quoted secret",
+			input:  `{"password":"plain-secret"}`,
+			secret: "plain-secret",
+		},
+		{
+			name:   "json quoted token with whitespace",
+			input:  `{"token": "plain-secret"}`,
+			secret: "plain-secret",
+		},
 	}
 
 	for _, tt := range tests {

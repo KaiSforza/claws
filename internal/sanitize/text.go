@@ -8,7 +8,7 @@ import (
 
 const Redacted = "[REDACTED]"
 
-var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])((?:aws[_-]?)?secret[_-]?access[_-]?key|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key(?:[_-]?id)?|credential)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
+var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(["']?)((?:aws[_-]?)?secret[_-]?access[_-]?key|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key(?:[_-]?id)?|credential)(["']?)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)`)
 var uriCredentialPattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@`)
 var bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}`)
 var basicCredentialPattern = regexp.MustCompile(`\b[Bb]asic\s+[A-Za-z0-9+/=]*[A-Z0-9+/=][A-Za-z0-9+/=]{7,}`)
@@ -33,7 +33,7 @@ func TerminalText(s string) string {
 
 // SensitiveText redacts common key=value or key:value secret assignments.
 func SensitiveText(s string) string {
-	s = sensitiveAssignmentPattern.ReplaceAllString(s, `${1}${2}${3}`+Redacted)
+	s = sensitiveAssignmentPattern.ReplaceAllString(s, `${1}${2}${3}${4}${5}`+Redacted)
 	s = uriCredentialPattern.ReplaceAllString(s, `${1}`+Redacted+`@`)
 	s = bearerCredentialPattern.ReplaceAllString(s, `Bearer `+Redacted)
 	s = basicCredentialPattern.ReplaceAllString(s, `Basic `+Redacted)
