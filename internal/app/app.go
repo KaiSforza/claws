@@ -384,7 +384,10 @@ func (a *App) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if cmd, handled := a.updateCurrentViewInput(msg); handled {
 		return a, cmd
 	}
-	return a.handleGlobalKeyMsg(msg)
+	if model, cmd, handled := a.handleGlobalKeyMsg(msg); handled {
+		return model, cmd
+	}
+	return a.delegateToCurrentView(msg)
 }
 
 func (a *App) handleBackKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -412,24 +415,31 @@ func (a *App) updateCurrentViewInput(msg tea.Msg) (tea.Cmd, bool) {
 	return cmd, true
 }
 
-func (a *App) handleGlobalKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (a *App) handleGlobalKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, a.keys.Quit):
-		return a.handleQuitKeyMsg()
+		model, cmd := a.handleQuitKeyMsg()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.Help):
-		return a.openHelpModal()
+		model, cmd := a.openHelpModal()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.Command):
-		return a.activateCommandMode()
+		model, cmd := a.activateCommandMode()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.Region):
-		return a.openRegionSelector()
+		model, cmd := a.openRegionSelector()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.Profile):
-		return a.openProfileSelector()
+		model, cmd := a.openProfileSelector()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.AI):
-		return a.openAIChatModal()
+		model, cmd := a.openAIChatModal()
+		return model, cmd, true
 	case key.Matches(msg, a.keys.CompactHeader):
-		return a.toggleCompactHeader()
+		model, cmd := a.toggleCompactHeader()
+		return model, cmd, true
 	}
-	return a, nil
+	return a, nil, false
 }
 
 func (a *App) handleQuitKeyMsg() (tea.Model, tea.Cmd) {

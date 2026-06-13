@@ -20,6 +20,7 @@ type MockView struct {
 	status      string
 	hasInput    bool
 	escReceived bool
+	lastKey     string
 }
 
 func (m *MockView) Init() tea.Cmd                     { return nil }
@@ -34,9 +35,12 @@ func (m *MockView) StatusLine() string {
 }
 func (m *MockView) HasActiveInput() bool { return m.hasInput }
 func (m *MockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && keyMsg.String() == "esc" {
-		m.escReceived = true
-		m.hasInput = false // Close input on esc
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+		m.lastKey = keyMsg.String()
+		if keyMsg.String() == "esc" {
+			m.escReceived = true
+			m.hasInput = false // Close input on esc
+		}
 	}
 	return m, nil
 }
@@ -513,6 +517,27 @@ func TestCommandModeActivation(t *testing.T) {
 	}
 	if app.modal != nil {
 		t.Error("Expected no modal for command mode")
+	}
+}
+
+func TestUnhandledKeyDelegatesToCurrentView(t *testing.T) {
+	app := newTestApp(t)
+	dashboard := &MockView{name: "Dashboard"}
+	app.currentView = dashboard
+
+	app.Update(tea.KeyPressMsg{Code: 0, Text: "j"})
+
+	if dashboard.lastKey != "j" {
+		t.Errorf("Expected j key to reach current view, got %q", dashboard.lastKey)
+	}
+	if app.currentView != dashboard {
+		t.Errorf("Expected currentView unchanged, got %T", app.currentView)
+	}
+	if app.commandMode {
+		t.Error("Expected commandMode to remain false")
+	}
+	if app.modal != nil {
+		t.Error("Expected no modal for unhandled key")
 	}
 }
 
