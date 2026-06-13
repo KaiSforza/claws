@@ -315,14 +315,41 @@ func storeSSOToken(tokenPath string, profile ProfileInfo, registerOutput *ssooid
 	if err != nil {
 		return apperrors.Wrap(err, "marshal SSO cache token")
 	}
-	tmpPath := fmt.Sprintf("%s.tmp-%d", tokenPath, time.Now().UnixNano())
-	if err := os.WriteFile(tmpPath, append(data, '\n'), 0o600); err != nil {
+	if err := writeFileAtomic(tokenPath, append(data, '\n'), 0o600); err != nil {
 		return apperrors.Wrap(err, "write SSO cache token")
 	}
-	if err := os.Rename(tmpPath, tokenPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return apperrors.Wrap(err, "replace SSO cache token")
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, ".sso-token.*")
+	if err != nil {
+		return err
 	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmpFile.Chmod(perm); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -143,6 +145,29 @@ func TestSSOTokenCachePathUsesSessionNameWhenPresent(t *testing.T) {
 	}
 	if withSession == withoutSession {
 		t.Fatalf("cache path with session should differ from legacy start URL path: %q", withSession)
+	}
+}
+
+func TestWriteFileAtomicRemovesTempFileOnRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "token.json")
+	if err := os.Mkdir(targetDir, 0o700); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+
+	err := writeFileAtomic(targetDir, []byte("secret-token"), 0o600)
+	if err == nil {
+		t.Fatal("writeFileAtomic() error = nil, want rename failure")
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("ReadDir failed: %v", readErr)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "token.json" {
+			t.Fatalf("unexpected temp file left behind: %s", entry.Name())
+		}
 	}
 }
 
