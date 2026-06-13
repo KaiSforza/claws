@@ -9,6 +9,7 @@ import (
 	rdsClient "github.com/clawscli/claws/custom/rds"
 	"github.com/clawscli/claws/internal/action"
 	"github.com/clawscli/claws/internal/dao"
+	apperrors "github.com/clawscli/claws/internal/errors"
 )
 
 func init() {
@@ -82,7 +83,7 @@ func executeStartInstance(ctx context.Context, resource dao.Resource) action.Act
 
 	_, err = client.StartDBInstance(ctx, input)
 	if err != nil {
-		return action.ActionResult{Success: false, Error: fmt.Errorf("start db instance: %w", err)}
+		return action.ActionResult{Success: false, Error: apperrors.Wrap(err, "start db instance")}
 	}
 
 	return action.ActionResult{
@@ -109,7 +110,7 @@ func executeStopInstance(ctx context.Context, resource dao.Resource) action.Acti
 
 	_, err = client.StopDBInstance(ctx, input)
 	if err != nil {
-		return action.ActionResult{Success: false, Error: fmt.Errorf("stop db instance: %w", err)}
+		return action.ActionResult{Success: false, Error: apperrors.Wrap(err, "stop db instance")}
 	}
 
 	return action.ActionResult{
@@ -136,7 +137,7 @@ func executeRebootInstance(ctx context.Context, resource dao.Resource) action.Ac
 
 	_, err = client.RebootDBInstance(ctx, input)
 	if err != nil {
-		return action.ActionResult{Success: false, Error: fmt.Errorf("reboot db instance: %w", err)}
+		return action.ActionResult{Success: false, Error: apperrors.Wrap(err, "reboot db instance")}
 	}
 
 	return action.ActionResult{

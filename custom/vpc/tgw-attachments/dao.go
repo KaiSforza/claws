@@ -2,7 +2,8 @@ package tgwattachments
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"reflect"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -73,7 +74,7 @@ func (d *TGWAttachmentDAO) Get(ctx context.Context, id string) (dao.Resource, er
 		return nil, apperrors.Wrapf(err, "describe transit gateway attachment %s", id)
 	}
 	if len(output.TransitGatewayAttachments) == 0 {
-		return nil, fmt.Errorf("transit gateway attachment not found: %s", id)
+		return nil, apperrors.Wrapf(errors.New(id), "transit gateway attachment not found")
 	}
 	return NewTGWAttachmentResource(output.TransitGatewayAttachments[0]), nil
 }
@@ -87,20 +88,20 @@ func (d *TGWAttachmentDAO) Delete(ctx context.Context, id string) error {
 	}
 	attRes, ok := att.(*TGWAttachmentResource)
 	if !ok {
-		return fmt.Errorf("unexpected transit gateway attachment resource type %T", att)
+		return apperrors.Wrap(errors.New(reflect.TypeOf(att).String()), "unexpected transit gateway attachment resource type")
 	}
 
 	switch attRes.ResourceType() {
-	case "vpc":
+	case string(types.TransitGatewayAttachmentResourceTypeVpc):
 		_, err = d.client.DeleteTransitGatewayVpcAttachment(ctx, &ec2.DeleteTransitGatewayVpcAttachmentInput{
 			TransitGatewayAttachmentId: &id,
 		})
-	case "peering":
+	case string(types.TransitGatewayAttachmentResourceTypePeering):
 		_, err = d.client.DeleteTransitGatewayPeeringAttachment(ctx, &ec2.DeleteTransitGatewayPeeringAttachmentInput{
 			TransitGatewayAttachmentId: &id,
 		})
 	default:
-		return fmt.Errorf("cannot delete attachment of type %s", attRes.ResourceType())
+		return apperrors.Wrap(errors.New(attRes.ResourceType()), "cannot delete attachment of type")
 	}
 
 	if err != nil {
