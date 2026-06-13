@@ -40,6 +40,7 @@ func (r *ResourceBrowser) handleNextPageLoaded(msg nextPageLoadedMsg) (tea.Model
 	r.nextPageTokens = msg.nextPageTokens
 	r.nextMultiPageTokens = msg.nextMultiPageTokens
 	r.hasMorePages = msg.hasMorePages
+	r.partialErrors = append(r.partialErrors, msg.partialErrors...)
 	r.applyFilter()
 	r.buildTable()
 	return r, nil

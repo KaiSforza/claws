@@ -114,13 +114,12 @@ func fetchParallel[K comparable](
 		if !ok {
 			continue
 		}
+		allResources = append(allResources, result.resources...)
+		if result.nextToken != "" {
+			pageTokens[key] = result.nextToken
+		}
 		if result.err != nil {
 			errors = append(errors, formatError(key, result.err))
-		} else {
-			allResources = append(allResources, result.resources...)
-			if result.nextToken != "" {
-				pageTokens[key] = result.nextToken
-			}
 		}
 	}
 
@@ -163,15 +162,12 @@ func (r *ResourceBrowser) fetchMultiProfileResources(profiles []config.ProfileSe
 		}
 
 		listResult := r.fetchWithDAO(fetchCtx, d, existingTokens[key])
-		if listResult.err != nil {
-			return nil, "", listResult.err
-		}
 
 		wrapped := make([]dao.Resource, len(listResult.resources))
 		for i, res := range listResult.resources {
 			wrapped[i] = dao.WrapWithProfile(dao.UnwrapResource(res), key.Profile, accountID, key.Region)
 		}
-		return wrapped, listResult.nextToken, nil
+		return wrapped, listResult.nextToken, listResult.err
 	}
 
 	formatError := func(key profileRegionKey, err error) string {
@@ -200,15 +196,12 @@ func (r *ResourceBrowser) fetchMultiRegionResources(regions []string, existingTo
 			token = existingTokens[region]
 		}
 		listResult := r.fetchWithDAO(regionCtx, d, token)
-		if listResult.err != nil {
-			return nil, "", listResult.err
-		}
 
 		wrapped := make([]dao.Resource, len(listResult.resources))
 		for i, res := range listResult.resources {
 			wrapped[i] = dao.WrapWithRegion(dao.UnwrapResource(res), region)
 		}
-		return wrapped, listResult.nextToken, nil
+		return wrapped, listResult.nextToken, listResult.err
 	}
 
 	formatError := func(region string, err error) string {
@@ -273,6 +266,16 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 		result := r.listResources(d)
 		if result.err != nil {
 			log.Error("failed to list resources", "error", result.err, "duration", time.Since(start))
+			if len(result.resources) > 0 {
+				return resourcesLoadedMsg{
+					dao:           d,
+					renderer:      renderer,
+					resources:     result.resources,
+					nextToken:     result.nextToken,
+					hasMorePages:  result.nextToken != "",
+					partialErrors: []string{result.err.Error()},
+				}
+			}
 			return resourcesErrorMsg{err: result.err}
 		}
 		log.Debug("resources loaded", "count", len(result.resources), "duration", time.Since(start))
@@ -338,6 +341,16 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 
 		result := r.listResources(d)
 		if result.err != nil {
+			if len(result.resources) > 0 {
+				return resourcesLoadedMsg{
+					dao:           d,
+					renderer:      r.renderer,
+					resources:     result.resources,
+					nextToken:     result.nextToken,
+					hasMorePages:  result.nextToken != "",
+					partialErrors: []string{result.err.Error()},
+				}
+			}
 			return resourcesErrorMsg{err: result.err}
 		}
 
@@ -382,6 +395,7 @@ type nextPageLoadedMsg struct {
 	nextPageTokens      map[string]string
 	nextMultiPageTokens map[profileRegionKey]string
 	hasMorePages        bool
+	partialErrors       []string
 }
 
 type resourcesErrorMsg struct {
@@ -435,6 +449,14 @@ func (r *ResourceBrowser) loadNextPage() tea.Msg {
 	resources, nextToken, err := pagDAO.ListPage(listCtx, r.pageSize, r.nextPageToken)
 	if err != nil {
 		log.Error("failed to load next page", "error", err, "duration", time.Since(start))
+		if len(resources) > 0 {
+			return nextPageLoadedMsg{
+				resources:     resources,
+				nextToken:     nextToken,
+				hasMorePages:  nextToken != "",
+				partialErrors: []string{err.Error()},
+			}
+		}
 		return resourcesErrorMsg{err: err}
 	}
 
@@ -467,6 +489,7 @@ func (r *ResourceBrowser) loadNextPageMultiRegion() tea.Msg {
 		resources:      fetchResult.resources,
 		nextPageTokens: fetchResult.pageTokens,
 		hasMorePages:   len(fetchResult.pageTokens) > 0,
+		partialErrors:  fetchResult.errors,
 	}
 }
 
@@ -490,5 +513,6 @@ func (r *ResourceBrowser) loadNextPageMultiProfile() tea.Msg {
 		resources:           fetchResult.resources,
 		nextMultiPageTokens: fetchResult.pageTokens,
 		hasMorePages:        len(fetchResult.pageTokens) > 0,
+		partialErrors:       fetchResult.errors,
 	}
 }

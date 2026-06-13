@@ -64,16 +64,13 @@ func (w *RegionalDAOWrapper) ResourceType() string {
 // List wraps all resources with region metadata
 func (w *RegionalDAOWrapper) List(ctx context.Context) ([]dao.Resource, error) {
 	resources, err := w.delegate.List(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	// Wrap each resource with region metadata
 	wrapped := make([]dao.Resource, len(resources))
 	for i, res := range resources {
 		wrapped[i] = dao.WrapWithRegion(res, w.region)
 	}
-	return wrapped, nil
+	return wrapped, err
 }
 
 // Get wraps the resource with region metadata
@@ -124,14 +121,11 @@ func NewPaginatedDAOWrapper(ctx context.Context, delegate dao.PaginatedDAO) dao.
 // ListPage wraps all resources with region metadata
 func (w *PaginatedDAOWrapper) ListPage(ctx context.Context, pageSize int, pageToken string) ([]dao.Resource, string, error) {
 	resources, nextToken, err := w.delegate.ListPage(ctx, pageSize, pageToken)
-	if err != nil {
-		return nil, "", err
-	}
 
 	// Wrap each resource with region metadata
 	wrapped := make([]dao.Resource, len(resources))
 	for i, res := range resources {
 		wrapped[i] = dao.WrapWithRegion(res, w.region)
 	}
-	return wrapped, nextToken, nil
+	return wrapped, nextToken, err
 }
