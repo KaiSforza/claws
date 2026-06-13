@@ -1,11 +1,16 @@
 package buckets
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
@@ -147,7 +152,64 @@ func TestBucketRendererShowsUnknownForFailedSecurityEnrichment(t *testing.T) {
 	}
 }
 
-func TestS3EnrichmentFailureStatusClassifiesNotConfiguredErrors(t *testing.T) {
+func TestBucketRendererShowsFailedOptionalEnrichmentStatuses(t *testing.T) {
+	resource := &BucketResource{
+		BucketName:       "test-bucket",
+		Region:           "us-east-1",
+		LifecycleStatus:  enrichment.FetchFailed,
+		ObjectLockStatus: enrichment.AccessDenied,
+		TagsStatus:       enrichment.FetchFailed,
+	}
+
+	detail := (&BucketRenderer{}).RenderDetail(resource)
+
+	for _, want := range []string{
+		"Lifecycle",
+		"Object Lock",
+		"Tags",
+		"Unknown (fetch failed)",
+		"Unknown (access denied)",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("expected %q in detail, got %q", want, detail)
+		}
+	}
+}
+
+func TestBucketDAOOptionalFetchFailuresSetStatuses(t *testing.T) {
+	client := s3.NewFromConfig(aws.Config{
+		Region:      "us-east-1",
+		Credentials: credentials.NewStaticCredentialsProvider("AKID", "SECRET", ""),
+		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
+		HTTPClient: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/xml"}},
+				Body:       io.NopCloser(strings.NewReader(`<Error><Code>InternalError</Code><Message>boom</Message></Error>`)),
+				Request:    &http.Request{},
+				Status:     "500 Internal Server Error",
+			}, nil
+		}),
+	})
+	resource := &BucketResource{}
+	dao := &BucketDAO{}
+
+	dao.fetchLifecycle(context.Background(), client, "test-bucket", resource)
+	dao.fetchObjectLock(context.Background(), client, "test-bucket", resource)
+	dao.fetchTags(context.Background(), client, "test-bucket", resource)
+
+	if resource.LifecycleStatus != enrichment.FetchFailed {
+		t.Fatalf("LifecycleStatus = %q, want %q", resource.LifecycleStatus, enrichment.FetchFailed)
+	}
+	if resource.ObjectLockStatus != enrichment.FetchFailed {
+		t.Fatalf("ObjectLockStatus = %q, want %q", resource.ObjectLockStatus, enrichment.FetchFailed)
+	}
+	if resource.TagsStatus != enrichment.FetchFailed {
+		t.Fatalf("TagsStatus = %q, want %q", resource.TagsStatus, enrichment.FetchFailed)
+	}
+}
+
+func TestS3EnrichmentClassifiesNotConfiguredErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		code string
@@ -162,11 +224,17 @@ func TestS3EnrichmentFailureStatusClassifiesNotConfiguredErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := &smithy.GenericAPIError{Code: tt.code, Message: tt.name}
-			if got := enrichmentFailureStatus(err); got != tt.want {
-				t.Fatalf("enrichmentFailureStatus(%q) = %q, want %q", tt.code, got, tt.want)
+			if got := enrichment.ClassifyError(err, encryptionNotConfiguredCode, publicAccessBlockNotConfiguredCode); got != tt.want {
+				t.Fatalf("ClassifyError(%q) = %q, want %q", tt.code, got, tt.want)
 			}
 		})
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestBucketResource_NilName(t *testing.T) {

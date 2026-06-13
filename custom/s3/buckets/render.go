@@ -171,7 +171,10 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 	}
 
 	// Object Lock
-	if b.ObjectLockEnabled {
+	if enrichment.IsFailure(b.ObjectLockStatus) {
+		d.Section("Object Lock")
+		d.Field("Status", enrichment.Display(b.ObjectLockStatus))
+	} else if b.ObjectLockEnabled {
 		d.Section("Object Lock")
 		d.Field("Status", "Enabled")
 		if b.ObjectLockMode != "" {
@@ -183,7 +186,10 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 	}
 
 	// Lifecycle Rules
-	if b.LifecycleRulesCount > 0 {
+	if enrichment.IsFailure(b.LifecycleStatus) {
+		d.Section("Lifecycle")
+		d.Field("Status", enrichment.Display(b.LifecycleStatus))
+	} else if b.LifecycleRulesCount > 0 {
 		d.Section("Lifecycle")
 		d.Field("Rules", fmt.Sprintf("%d lifecycle rules configured", b.LifecycleRulesCount))
 	}
@@ -196,7 +202,12 @@ func (r *BucketRenderer) RenderDetail(resource dao.Resource) string {
 	}
 
 	// Tags
-	d.Tags(b.GetTags())
+	if enrichment.IsFailure(b.TagsStatus) {
+		d.Section("Tags")
+		d.Field("Status", enrichment.Display(b.TagsStatus))
+	} else {
+		d.Tags(b.GetTags())
+	}
 
 	return d.String()
 }
@@ -244,6 +255,8 @@ func (r *BucketRenderer) RenderSummary(resource dao.Resource) []render.SummaryFi
 	// Object Lock (if enabled)
 	if b.ObjectLockEnabled {
 		fields = append(fields, render.SummaryField{Label: "Object Lock", Value: "Enabled"})
+	} else if enrichment.IsFailure(b.ObjectLockStatus) {
+		fields = append(fields, render.SummaryField{Label: "Object Lock", Value: enrichment.Display(b.ObjectLockStatus)})
 	}
 
 	// Lifecycle rules count (if fetched)
@@ -252,6 +265,12 @@ func (r *BucketRenderer) RenderSummary(resource dao.Resource) []render.SummaryFi
 			Label: "Lifecycle Rules",
 			Value: fmt.Sprintf("%d", b.LifecycleRulesCount),
 		})
+	} else if enrichment.IsFailure(b.LifecycleStatus) {
+		fields = append(fields, render.SummaryField{Label: "Lifecycle Rules", Value: enrichment.Display(b.LifecycleStatus)})
+	}
+
+	if enrichment.IsFailure(b.TagsStatus) {
+		fields = append(fields, render.SummaryField{Label: "Tags", Value: enrichment.Display(b.TagsStatus)})
 	}
 
 	// Creation info
