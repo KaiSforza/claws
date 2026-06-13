@@ -430,15 +430,7 @@ func (r *ResourceBrowser) loadNextPage() tea.Msg {
 	start := time.Now()
 	log.Debug("loading next page", "service", r.service, "resourceType", r.resourceType, "token", r.nextPageToken[:min(logTokenMaxLen, len(r.nextPageToken))])
 
-	listCtx := r.ctx
-	if r.fieldFilter != "" && r.fieldFilterValue != "" {
-		listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
-	}
-	for key, val := range r.toggleStates {
-		if val {
-			listCtx = dao.WithFilter(listCtx, key, "true")
-		}
-	}
+	listCtx := r.buildListContext(r.ctx)
 
 	resources, nextToken, err := pagDAO.ListPage(listCtx, r.pageSize, r.nextPageToken)
 	if err != nil {
