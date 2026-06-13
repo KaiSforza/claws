@@ -120,14 +120,19 @@ func (i publicSubnetIndex) IsPublic(subnet types.Subnet) bool {
 // and subnet IDs that have explicit route table associations.
 func (d *SubnetDAO) getPublicSubnetIndex(ctx context.Context) publicSubnetIndex {
 	index := newPublicSubnetIndex()
+	paginator := ec2.NewDescribeRouteTablesPaginator(d.client, &ec2.DescribeRouteTablesInput{})
 
-	// Get all route tables
-	rtOutput, err := d.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{})
-	if err != nil {
-		return index // Return empty on error, fail gracefully
+	routeTables := []types.RouteTable{}
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return index // Return empty on error, fail gracefully
+		}
+
+		routeTables = append(routeTables, page.RouteTables...)
 	}
 
-	return buildPublicSubnetIndex(rtOutput.RouteTables)
+	return buildPublicSubnetIndex(routeTables)
 }
 
 func buildPublicSubnetIndex(routeTables []types.RouteTable) publicSubnetIndex {
