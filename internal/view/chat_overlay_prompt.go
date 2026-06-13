@@ -1,6 +1,7 @@
 package view
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -49,7 +50,7 @@ Be concise. Use markdown for formatting.
 	if c.aiCtx != nil {
 		if len(c.aiCtx.UserRegions) > 0 {
 			prompt += "\n\n<user_selected_regions>"
-			prompt += strings.Join(c.aiCtx.UserRegions, ", ")
+			prompt += strings.Join(promptValues(c.aiCtx.UserRegions), ", ")
 			prompt += "\nThese are ALL regions the user is currently browsing."
 			prompt += "\nIn list mode, query resources across ALL these regions (call query_resources for each)."
 			prompt += "\nFor specific resources (detail/diff mode), use the region from current_context instead."
@@ -58,7 +59,7 @@ Be concise. Use markdown for formatting.
 
 		if len(c.aiCtx.UserProfiles) > 0 {
 			prompt += "\n\n<user_selected_profiles>"
-			prompt += strings.Join(c.aiCtx.UserProfiles, ", ")
+			prompt += strings.Join(promptValues(c.aiCtx.UserProfiles), ", ")
 			prompt += "\nThese are ALL profile IDs the user is currently browsing."
 			prompt += "\nIn list mode, query resources across ALL these profiles (call query_resources for each)."
 			prompt += "\nFor specific resources (detail/diff mode), use the profile from current_context instead."
@@ -84,10 +85,10 @@ func (c *ChatOverlay) buildListContextPrompt() string {
 		return ""
 	}
 
-	prompt := fmt.Sprintf("\n<current_context mode=\"list\">\nservice=%s, resource_type=%s", ctx.Service, ctx.ResourceType)
+	prompt := fmt.Sprintf("\n<current_context mode=\"list\">\nservice=%s, resource_type=%s", promptValue(ctx.Service), promptValue(ctx.ResourceType))
 	prompt += fmt.Sprintf(", count=%d", ctx.ResourceCount)
 	if ctx.FilterText != "" {
-		prompt += fmt.Sprintf(", filter=\"%s\"", ctx.FilterText)
+		prompt += fmt.Sprintf(", filter=%s", promptValue(ctx.FilterText))
 	}
 	if ctx.Service == "securityhub" && ctx.ResourceType == "findings" {
 		if ctx.Toggles["ShowResolved"] {
@@ -107,26 +108,26 @@ func (c *ChatOverlay) buildDiffContextPrompt() string {
 		return ""
 	}
 
-	prompt := fmt.Sprintf("\n<current_context mode=\"diff\">\nservice=%s, resource_type=%s", ctx.Service, ctx.ResourceType)
-	prompt += fmt.Sprintf("\nleft: id=%s, name=%s", ctx.DiffLeft.ID, ctx.DiffLeft.Name)
+	prompt := fmt.Sprintf("\n<current_context mode=\"diff\">\nservice=%s, resource_type=%s", promptValue(ctx.Service), promptValue(ctx.ResourceType))
+	prompt += fmt.Sprintf("\nleft: id=%s, name=%s", promptValue(ctx.DiffLeft.ID), promptValue(ctx.DiffLeft.Name))
 	if ctx.DiffLeft.Region != "" {
-		prompt += fmt.Sprintf(", region=%s", ctx.DiffLeft.Region)
+		prompt += fmt.Sprintf(", region=%s", promptValue(ctx.DiffLeft.Region))
 	}
 	if ctx.DiffLeft.Profile != "" {
-		prompt += fmt.Sprintf(", profile=%s", ctx.DiffLeft.Profile)
+		prompt += fmt.Sprintf(", profile=%s", promptValue(ctx.DiffLeft.Profile))
 	}
 	if ctx.DiffLeft.Cluster != "" {
-		prompt += fmt.Sprintf(", cluster=%s", ctx.DiffLeft.Cluster)
+		prompt += fmt.Sprintf(", cluster=%s", promptValue(ctx.DiffLeft.Cluster))
 	}
-	prompt += fmt.Sprintf("\nright: id=%s, name=%s", ctx.DiffRight.ID, ctx.DiffRight.Name)
+	prompt += fmt.Sprintf("\nright: id=%s, name=%s", promptValue(ctx.DiffRight.ID), promptValue(ctx.DiffRight.Name))
 	if ctx.DiffRight.Region != "" {
-		prompt += fmt.Sprintf(", region=%s", ctx.DiffRight.Region)
+		prompt += fmt.Sprintf(", region=%s", promptValue(ctx.DiffRight.Region))
 	}
 	if ctx.DiffRight.Profile != "" {
-		prompt += fmt.Sprintf(", profile=%s", ctx.DiffRight.Profile)
+		prompt += fmt.Sprintf(", profile=%s", promptValue(ctx.DiffRight.Profile))
 	}
 	if ctx.DiffRight.Cluster != "" {
-		prompt += fmt.Sprintf(", cluster=%s", ctx.DiffRight.Cluster)
+		prompt += fmt.Sprintf(", cluster=%s", promptValue(ctx.DiffRight.Cluster))
 	}
 	prompt += "\n</current_context>"
 	prompt += "\nIMPORTANT: Call get_resource_detail twice (once for left, once for right) using each resource's specific region and profile."
@@ -139,25 +140,41 @@ func (c *ChatOverlay) buildSingleContextPrompt() string {
 		return ""
 	}
 
-	prompt := fmt.Sprintf("\n<current_context>service=%s", ctx.Service)
+	prompt := fmt.Sprintf("\n<current_context>service=%s", promptValue(ctx.Service))
 	if ctx.ResourceType != "" {
-		prompt += ", resource_type=" + ctx.ResourceType
+		prompt += ", resource_type=" + promptValue(ctx.ResourceType)
 	}
 	if ctx.ResourceRegion != "" {
-		prompt += ", region=" + ctx.ResourceRegion
+		prompt += ", region=" + promptValue(ctx.ResourceRegion)
 	}
 	if ctx.ResourceID != "" {
-		prompt += ", id=" + ctx.ResourceID
+		prompt += ", id=" + promptValue(ctx.ResourceID)
 	}
 	if ctx.ResourceProfile != "" {
-		prompt += ", profile=" + ctx.ResourceProfile
+		prompt += ", profile=" + promptValue(ctx.ResourceProfile)
 	}
 	if ctx.Cluster != "" {
-		prompt += ", cluster=" + ctx.Cluster
+		prompt += ", cluster=" + promptValue(ctx.Cluster)
 	}
 	prompt += "</current_context>"
 	prompt += "\nIMPORTANT: Use the region and profile from current_context when querying this resource."
 	return prompt
+}
+
+func promptValue(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "\"\""
+	}
+	return string(encoded)
+}
+
+func promptValues(values []string) []string {
+	encoded := make([]string, len(values))
+	for i, value := range values {
+		encoded[i] = promptValue(value)
+	}
+	return encoded
 }
 
 func (c *ChatOverlay) renderContextParams() string {
