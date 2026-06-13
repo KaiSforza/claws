@@ -246,7 +246,7 @@ func (e *ExecWithHeader) showFailure(stdin io.Reader, stdout io.Writer, err erro
 }
 
 func (e *ExecWithHeader) command(ctx context.Context) (*exec.Cmd, error) {
-	return buildExecCommand(ctx, e.Command, e.Args, nil)
+	return buildExecCommand(ctx, e.Command, e.Args, e.Resource)
 }
 
 func (e *ExecWithHeader) buildHeader(_ int) string {

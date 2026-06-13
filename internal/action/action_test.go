@@ -48,29 +48,27 @@ func TestBuildExecCommandSharedPath(t *testing.T) {
 	}{
 		{
 			name:    "shell command",
-			command: "echo shared-id",
+			command: "echo ${ID}",
 		},
 		{
 			name: "args command",
-			args: []string{"/bin/echo", "shared-id"},
+			args: []string{"/bin/echo", "${ID}"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fromExecuteExec, err := buildExecCommand(ctx, "echo ${ID}", []string{}, resource)
-			if len(tt.args) > 0 {
-				fromExecuteExec, err = buildExecCommand(ctx, "", []string{"/bin/echo", "${ID}"}, resource)
-			}
+			fromExecuteExec, err := buildExecCommand(ctx, tt.command, tt.args, resource)
 			if err != nil {
 				t.Fatalf("buildExecCommand() returned error: %v", err)
 			}
 
-			fromSimple, err := (&SimpleExec{Command: tt.command, Args: tt.args}).command(ctx)
+			preExpandedCommand, preExpandedArgs := expandExecTemplateForTest(t, tt.command, tt.args, resource)
+			fromSimple, err := (&SimpleExec{Command: preExpandedCommand, Args: preExpandedArgs}).command(ctx)
 			if err != nil {
 				t.Fatalf("SimpleExec.command() returned error: %v", err)
 			}
-			fromHeader, err := (&ExecWithHeader{Command: tt.command, Args: tt.args}).command(ctx)
+			fromHeader, err := (&ExecWithHeader{Command: tt.command, Args: tt.args, Resource: resource}).command(ctx)
 			if err != nil {
 				t.Fatalf("ExecWithHeader.command() returned error: %v", err)
 			}
@@ -82,6 +80,27 @@ func TestBuildExecCommandSharedPath(t *testing.T) {
 			assertSameCommand(t, fromExecuteExec, fromHeader)
 		})
 	}
+}
+
+func TestExecWithHeaderCommandExpandsResourceVariables(t *testing.T) {
+	ctx := context.Background()
+	resource := &mockResource{id: "interactive-id"}
+
+	t.Run("command string", func(t *testing.T) {
+		cmd, err := (&ExecWithHeader{Command: "echo ${ID}", Resource: resource}).command(ctx)
+		if err != nil {
+			t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+		}
+		assertSameStrings(t, "Args", cmd.Args, []string{"/bin/sh", "-c", "echo interactive-id"})
+	})
+
+	t.Run("args", func(t *testing.T) {
+		cmd, err := (&ExecWithHeader{Args: []string{"/bin/echo", "${ID}"}, Resource: resource}).command(ctx)
+		if err != nil {
+			t.Fatalf("ExecWithHeader.command() returned error: %v", err)
+		}
+		assertSameStrings(t, "Args", cmd.Args, []string{"/bin/echo", "interactive-id"})
+	})
 }
 
 func TestBuildExecCommandSmoke(t *testing.T) {
@@ -97,6 +116,22 @@ func TestBuildExecCommandSmoke(t *testing.T) {
 	if got, want := stdout.String(), "hello\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
+}
+
+func expandExecTemplateForTest(t *testing.T, command string, args []string, resource dao.Resource) (string, []string) {
+	t.Helper()
+	if len(args) > 0 {
+		expanded, err := ExpandArgs(args, resource)
+		if err != nil {
+			t.Fatalf("ExpandArgs() returned error: %v", err)
+		}
+		return "", expanded
+	}
+	expanded, err := ExpandVariables(command, resource)
+	if err != nil {
+		t.Fatalf("ExpandVariables() returned error: %v", err)
+	}
+	return expanded, nil
 }
 
 func assertSameCommand(t *testing.T, want, got *exec.Cmd) {
