@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/clawscli/claws/internal/aws"
 	"github.com/clawscli/claws/internal/config"
 	"github.com/clawscli/claws/internal/dao"
+	apperrors "github.com/clawscli/claws/internal/errors"
 	"github.com/clawscli/claws/internal/log"
 	"github.com/clawscli/claws/internal/render"
 )
@@ -22,7 +24,7 @@ type listResourcesResult struct {
 	err       error
 }
 
-func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DAO) listResourcesResult {
+func (r *ResourceBrowser) buildListContext(ctx context.Context) context.Context {
 	listCtx := ctx
 	if r.fieldFilter != "" && r.fieldFilterValue != "" {
 		listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
@@ -32,7 +34,11 @@ func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DA
 			listCtx = dao.WithFilter(listCtx, key, "true")
 		}
 	}
+	return listCtx
+}
 
+func (r *ResourceBrowser) listResourcesWithContext(ctx context.Context, d dao.DAO) listResourcesResult {
+	listCtx := r.buildListContext(ctx)
 	var resources []dao.Resource
 	var nextToken string
 	var err error
@@ -215,15 +221,7 @@ func (r *ResourceBrowser) fetchMultiRegionResources(regions []string, existingTo
 
 func (r *ResourceBrowser) fetchWithDAO(ctx context.Context, d dao.DAO, token string) listResourcesResult {
 	if pagDAO, ok := d.(dao.PaginatedDAO); ok {
-		listCtx := ctx
-		if r.fieldFilter != "" && r.fieldFilterValue != "" {
-			listCtx = dao.WithFilter(listCtx, r.fieldFilter, r.fieldFilterValue)
-		}
-		for key, val := range r.toggleStates {
-			if val {
-				listCtx = dao.WithFilter(listCtx, key, "true")
-			}
-		}
+		listCtx := r.buildListContext(ctx)
 		resources, nextToken, err := pagDAO.ListPage(listCtx, r.pageSize, token)
 		return listResourcesResult{resources: resources, nextToken: nextToken, err: err}
 	}
@@ -249,7 +247,7 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 	if isMultiProfile {
 		fetchResult := r.fetchMultiProfileResources(profiles, regions, nil)
 		if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-			return resourcesErrorMsg{err: fmt.Errorf("all profile/region pairs failed: %s", strings.Join(fetchResult.errors, "; "))}
+			return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all profile/region pairs failed")}
 		}
 
 		log.Debug("multi-profile resources loaded", "count", len(fetchResult.resources),
@@ -290,7 +288,7 @@ func (r *ResourceBrowser) loadResources() tea.Msg {
 
 	fetchResult := r.fetchMultiRegionResources(regions, nil)
 	if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-		return resourcesErrorMsg{err: fmt.Errorf("all regions failed: %s", strings.Join(fetchResult.errors, "; "))}
+		return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all regions failed")}
 	}
 
 	log.Debug("multi-region resources loaded", "count", len(fetchResult.resources),
@@ -315,7 +313,7 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 	if isMultiProfile {
 		fetchResult := r.fetchMultiProfileResources(profiles, regions, nil)
 		if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-			return resourcesErrorMsg{err: fmt.Errorf("all profile/region pairs failed: %s", strings.Join(fetchResult.errors, "; "))}
+			return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all profile/region pairs failed")}
 		}
 
 		return resourcesLoadedMsg{
@@ -354,7 +352,7 @@ func (r *ResourceBrowser) reloadResources() tea.Msg {
 
 	fetchResult := r.fetchMultiRegionResources(regions, nil)
 	if len(fetchResult.resources) == 0 && len(fetchResult.errors) > 0 {
-		return resourcesErrorMsg{err: fmt.Errorf("all regions failed: %s", strings.Join(fetchResult.errors, "; "))}
+		return resourcesErrorMsg{err: apperrors.Wrapf(errors.New(strings.Join(fetchResult.errors, "; ")), "all regions failed")}
 	}
 
 	return resourcesLoadedMsg{
