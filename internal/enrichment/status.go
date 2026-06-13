@@ -18,6 +18,15 @@ const (
 
 func FailureStatus(err error) Status { return ClassifyError(err) }
 
+func Fetch[T any](call func() (T, error)) (T, Status) {
+	value, err := call()
+	if err != nil {
+		var zero T
+		return zero, FailureStatus(err)
+	}
+	return value, Fetched
+}
+
 func ClassifyError(err error, notConfiguredCodes ...string) Status {
 	if apperrors.IsAccessDenied(err) {
 		return AccessDenied

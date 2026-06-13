@@ -12,6 +12,11 @@ import (
 	apperrors "github.com/clawscli/claws/internal/errors"
 )
 
+const (
+	defaultPageSize = 100
+	maxPageSize     = 1000
+)
+
 // PolicyDAO provides data access for IAM Policies
 type PolicyDAO struct {
 	dao.BaseDAO
@@ -33,7 +38,7 @@ func NewPolicyDAO(ctx context.Context) (dao.DAO, error) {
 // List returns policies (first page only for backwards compatibility).
 // For paginated access, use ListPage instead.
 func (d *PolicyDAO) List(ctx context.Context) ([]dao.Resource, error) {
-	resources, _, err := d.ListPage(ctx, 100, "")
+	resources, _, err := d.ListPage(ctx, defaultPageSize, "")
 	return resources, err
 }
 
@@ -41,8 +46,8 @@ func (d *PolicyDAO) List(ctx context.Context) ([]dao.Resource, error) {
 // Implements dao.PaginatedDAO interface.
 func (d *PolicyDAO) ListPage(ctx context.Context, pageSize int, pageToken string) ([]dao.Resource, string, error) {
 	maxItems := int32(pageSize)
-	if maxItems > 1000 {
-		maxItems = 1000 // AWS API max
+	if maxItems > maxPageSize {
+		maxItems = maxPageSize // AWS API max
 	}
 
 	input := &iam.ListPoliciesInput{
@@ -83,27 +88,30 @@ func (d *PolicyDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 
 	// Fetch the policy document for the default version
 	if output.Policy.DefaultVersionId != nil {
-		versionOutput, err := d.client.GetPolicyVersion(ctx, &iam.GetPolicyVersionInput{
-			PolicyArn: &id,
-			VersionId: output.Policy.DefaultVersionId,
+		versionOutput, status := enrichment.Fetch(func() (*iam.GetPolicyVersionOutput, error) {
+			return d.client.GetPolicyVersion(ctx, &iam.GetPolicyVersionInput{
+				PolicyArn: &id,
+				VersionId: output.Policy.DefaultVersionId,
+			})
 		})
-		if err == nil && versionOutput.PolicyVersion != nil && versionOutput.PolicyVersion.Document != nil {
+		if status == enrichment.Fetched && versionOutput.PolicyVersion != nil && versionOutput.PolicyVersion.Document != nil {
 			res.PolicyDocument = *versionOutput.PolicyVersion.Document
-			res.PolicyDocumentStatus = enrichment.Fetched
-		} else if err != nil {
-			res.PolicyDocumentStatus = enrichment.FailureStatus(err)
+			res.PolicyDocumentStatus = status
+		} else if status != enrichment.Fetched {
+			res.PolicyDocumentStatus = status
 		}
 	}
 
 	// List entities attached to this policy
-	if entities, err := d.client.ListEntitiesForPolicy(ctx, &iam.ListEntitiesForPolicyInput{PolicyArn: &id}); err == nil {
+	entities, status := enrichment.Fetch(func() (*iam.ListEntitiesForPolicyOutput, error) {
+		return d.client.ListEntitiesForPolicy(ctx, &iam.ListEntitiesForPolicyInput{PolicyArn: &id})
+	})
+	if status == enrichment.Fetched {
 		res.AttachedUsers = entities.PolicyUsers
 		res.AttachedRoles = entities.PolicyRoles
 		res.AttachedGroups = entities.PolicyGroups
-		res.AttachedEntitiesStatus = enrichment.Fetched
-	} else {
-		res.AttachedEntitiesStatus = enrichment.FailureStatus(err)
 	}
+	res.AttachedEntitiesStatus = status
 
 	return res, nil
 }

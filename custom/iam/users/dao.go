@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/iam/types"
@@ -87,45 +88,85 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 
 	detail := UserDetail{User: *output.User}
 
-	// Fetch access keys
-	if keys, err := d.client.ListAccessKeys(ctx, &iam.ListAccessKeysInput{UserName: &id}); err == nil {
-		detail.AccessKeys = keys.AccessKeyMetadata
-		detail.AccessKeysStatus = enrichment.Fetched
-	} else {
-		detail.AccessKeysStatus = enrichment.FailureStatus(err)
-	}
+	var wg sync.WaitGroup
+	wg.Add(5)
 
-	// Fetch MFA devices
-	if mfa, err := d.client.ListMFADevices(ctx, &iam.ListMFADevicesInput{UserName: &id}); err == nil {
-		detail.MFADevices = mfa.MFADevices
-		detail.MFADevicesStatus = enrichment.Fetched
-	} else {
-		detail.MFADevicesStatus = enrichment.FailureStatus(err)
-	}
+	var accessKeys []types.AccessKeyMetadata
+	var accessKeysStatus enrichment.Status
+	go func() {
+		defer wg.Done()
+		keys, status := enrichment.Fetch(func() (*iam.ListAccessKeysOutput, error) {
+			return d.client.ListAccessKeys(ctx, &iam.ListAccessKeysInput{UserName: &id})
+		})
+		if status == enrichment.Fetched {
+			accessKeys = keys.AccessKeyMetadata
+		}
+		accessKeysStatus = status
+	}()
 
-	// Fetch groups
-	if groups, err := d.client.ListGroupsForUser(ctx, &iam.ListGroupsForUserInput{UserName: &id}); err == nil {
-		detail.Groups = groups.Groups
-		detail.GroupsStatus = enrichment.Fetched
-	} else {
-		detail.GroupsStatus = enrichment.FailureStatus(err)
-	}
+	var mfaDevices []types.MFADevice
+	var mfaDevicesStatus enrichment.Status
+	go func() {
+		defer wg.Done()
+		mfa, status := enrichment.Fetch(func() (*iam.ListMFADevicesOutput, error) {
+			return d.client.ListMFADevices(ctx, &iam.ListMFADevicesInput{UserName: &id})
+		})
+		if status == enrichment.Fetched {
+			mfaDevices = mfa.MFADevices
+		}
+		mfaDevicesStatus = status
+	}()
 
-	// Fetch attached policies
-	if policies, err := d.client.ListAttachedUserPolicies(ctx, &iam.ListAttachedUserPoliciesInput{UserName: &id}); err == nil {
-		detail.AttachedPolicies = policies.AttachedPolicies
-		detail.AttachedPoliciesStatus = enrichment.Fetched
-	} else {
-		detail.AttachedPoliciesStatus = enrichment.FailureStatus(err)
-	}
+	var groups []types.Group
+	var groupsStatus enrichment.Status
+	go func() {
+		defer wg.Done()
+		out, status := enrichment.Fetch(func() (*iam.ListGroupsForUserOutput, error) {
+			return d.client.ListGroupsForUser(ctx, &iam.ListGroupsForUserInput{UserName: &id})
+		})
+		if status == enrichment.Fetched {
+			groups = out.Groups
+		}
+		groupsStatus = status
+	}()
 
-	// Fetch inline policy names
-	if inline, err := d.client.ListUserPolicies(ctx, &iam.ListUserPoliciesInput{UserName: &id}); err == nil {
-		detail.InlinePolicies = inline.PolicyNames
-		detail.InlinePoliciesStatus = enrichment.Fetched
-	} else {
-		detail.InlinePoliciesStatus = enrichment.FailureStatus(err)
-	}
+	var attachedPolicies []types.AttachedPolicy
+	var attachedPoliciesStatus enrichment.Status
+	go func() {
+		defer wg.Done()
+		policies, status := enrichment.Fetch(func() (*iam.ListAttachedUserPoliciesOutput, error) {
+			return d.client.ListAttachedUserPolicies(ctx, &iam.ListAttachedUserPoliciesInput{UserName: &id})
+		})
+		if status == enrichment.Fetched {
+			attachedPolicies = policies.AttachedPolicies
+		}
+		attachedPoliciesStatus = status
+	}()
+
+	var inlinePolicies []string
+	var inlinePoliciesStatus enrichment.Status
+	go func() {
+		defer wg.Done()
+		inline, status := enrichment.Fetch(func() (*iam.ListUserPoliciesOutput, error) {
+			return d.client.ListUserPolicies(ctx, &iam.ListUserPoliciesInput{UserName: &id})
+		})
+		if status == enrichment.Fetched {
+			inlinePolicies = inline.PolicyNames
+		}
+		inlinePoliciesStatus = status
+	}()
+
+	wg.Wait()
+	detail.AccessKeys = accessKeys
+	detail.AccessKeysStatus = accessKeysStatus
+	detail.MFADevices = mfaDevices
+	detail.MFADevicesStatus = mfaDevicesStatus
+	detail.Groups = groups
+	detail.GroupsStatus = groupsStatus
+	detail.AttachedPolicies = attachedPolicies
+	detail.AttachedPoliciesStatus = attachedPoliciesStatus
+	detail.InlinePolicies = inlinePolicies
+	detail.InlinePoliciesStatus = inlinePoliciesStatus
 
 	return NewUserResourceWithDetail(detail), nil
 }
