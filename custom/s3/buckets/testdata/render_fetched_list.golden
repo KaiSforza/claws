@@ -1,0 +1,52 @@
+[1;38;5;170mS3 Bucket: [m
+
+
+                 
+[1;38;5;33mBasic Information[m
+[38;5;247mBucket Name:[m                    [38;5;252mmy-bucket[m
+[38;5;247mRegion:[m                         [38;5;252mus-east-1[m
+
+      
+[1;38;5;33mAccess[m
+[38;5;247mARN:[m                            [38;5;252marn:aws:s3:::my-bucket[m
+[38;5;247mS3 URI:[m                         [38;5;252ms3://my-bucket[m
+[38;5;247mEndpoint:[m                       [38;5;252mmy-bucket.s3.us-east-1.amazonaws.com[m
+
+          
+[1;38;5;33mVersioning[m
+[38;5;247mStatus:[m                         [38;5;252mEnabled[m
+[38;5;247mMFA Delete:[m                     [38;5;252mDisabled[m
+
+                      
+[1;38;5;33mServer-Side Encryption[m
+[38;5;247mStatus:[m                         [38;5;252mEnabled[m
+[38;5;247mAlgorithm:[m                      [38;5;252maws:kms[m
+[38;5;247mKMS Key ID:[m                     [38;5;252marn:aws:kms:us-east-1:123456789012:key/example[m
+[38;5;247mBucket Key:[m                     [38;5;252mEnabled[m
+
+                   
+[1;38;5;33mBlock Public Access[m
+[38;5;247mStatus:[m                         [38;5;252mAll public access blocked[m
+
+           
+[1;38;5;33mObject Lock[m
+[38;5;247mStatus:[m                         [38;5;252mEnabled[m
+[38;5;247mDefault Mode:[m                   [38;5;252mGOVERNANCE[m
+[38;5;247mDefault Retention:[m              [38;5;252m30 days[m
+
+         
+[1;38;5;33mLifecycle[m
+[38;5;247mRules:[m                          [38;5;252m2 lifecycle rules configured[m
+
+    
+[1;38;5;33mTags[m
+  [38;5;247mEnvironment:[m [38;5;252mprod[m
+
+---SUMMARY---
+Bucket=
+Region=us-east-1
+Versioning=Enabled
+Encryption=aws:kms
+Public Access=Blocked
+Object Lock=Enabled
+Lifecycle Rules=2

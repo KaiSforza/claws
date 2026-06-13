@@ -1,0 +1,30 @@
+[1;38;5;170mIAM Policy: my-policy[m
+
+
+                 
+[1;38;5;33mBasic Information[m
+[38;5;247mPolicy Name:[m                    [38;5;252mmy-policy[m
+[38;5;247mPolicy ID:[m                      [38;5;252mANPAEXAMPLE12345[m
+[38;5;247mPath:[m                           [38;5;252m/[m
+[38;5;247mARN:[m                            [38;5;252marn:aws:iam::123456789012:policy/my-policy[m
+[38;5;247mScope:[m                          [38;5;252mLocal[m
+
+          
+[1;38;5;33mAttachment[m
+[38;5;247mAttachable:[m                     [38;5;252mtrue[m
+[38;5;247mAttachment Count:[m               [38;5;252m0[m
+
+          
+[1;38;5;33mVersioning[m
+[38;5;247mDefault Version:[m                [38;5;252mv1[m
+
+        
+[1;38;5;33mTimeline[m
+
+---SUMMARY---
+Policy Name=my-policy
+Policy ID=ANPAEXAMPLE12345
+Path=/
+Scope=Local
+Attachments=0
+ARN=arn:aws:iam::123456789012:policy/my-policy
