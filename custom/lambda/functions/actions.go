@@ -2,7 +2,6 @@ package functions
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -11,6 +10,7 @@ import (
 	lambdaClient "github.com/clawscli/claws/custom/lambda"
 	"github.com/clawscli/claws/internal/action"
 	"github.com/clawscli/claws/internal/dao"
+	"github.com/clawscli/claws/internal/sanitize"
 )
 
 func init() {
@@ -61,7 +61,7 @@ func getLambdaClient(ctx context.Context) (*lambda.Client, error) {
 }
 
 func executeInvoke(ctx context.Context, resource dao.Resource, dryRun bool) action.ActionResult {
-	fn, ok := resource.(*FunctionResource)
+	fn, ok := dao.UnwrapResource(resource).(*FunctionResource)
 	if !ok {
 		return action.InvalidResourceResult()
 	}
@@ -96,23 +96,8 @@ func executeInvoke(ctx context.Context, resource dao.Resource, dryRun bool) acti
 		return action.SuccessResult(fmt.Sprintf("Dry run successful for %s (Status: %d)", functionName, output.StatusCode))
 	}
 
-	// Parse response
 	statusCode := output.StatusCode
-	var responsePreview string
-
-	if len(output.Payload) > 0 {
-		// Try to pretty-print JSON response
-		var result any
-		if err := json.Unmarshal(output.Payload, &result); err == nil {
-			if len(output.Payload) > 100 {
-				responsePreview = string(output.Payload[:100]) + "..."
-			} else {
-				responsePreview = string(output.Payload)
-			}
-		} else {
-			responsePreview = string(output.Payload)
-		}
-	}
+	responsePreview := lambdaPayloadPreview(output.Payload)
 
 	// Check for function error
 	if output.FunctionError != nil && *output.FunctionError != "" {
@@ -122,8 +107,19 @@ func executeInvoke(ctx context.Context, resource dao.Resource, dryRun bool) acti
 	return action.SuccessResult(fmt.Sprintf("Invoked %s (Status: %d) Response: %s", functionName, statusCode, responsePreview))
 }
 
+func lambdaPayloadPreview(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	preview := string(payload)
+	if len(preview) > 100 {
+		preview = preview[:100] + "..."
+	}
+	return sanitize.SensitiveText(preview)
+}
+
 func executeDeleteFunction(ctx context.Context, resource dao.Resource) action.ActionResult {
-	fn, ok := resource.(*FunctionResource)
+	fn, ok := dao.UnwrapResource(resource).(*FunctionResource)
 	if !ok {
 		return action.InvalidResourceResult()
 	}
