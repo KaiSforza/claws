@@ -98,7 +98,7 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		keys, status := enrichment.Fetch(func() (*iam.ListAccessKeysOutput, error) {
 			return d.client.ListAccessKeys(ctx, &iam.ListAccessKeysInput{UserName: &id})
 		})
-		if status == enrichment.Fetched {
+		if enrichment.Fetched == status {
 			accessKeys = keys.AccessKeyMetadata
 		}
 		accessKeysStatus = status
@@ -111,7 +111,7 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		mfa, status := enrichment.Fetch(func() (*iam.ListMFADevicesOutput, error) {
 			return d.client.ListMFADevices(ctx, &iam.ListMFADevicesInput{UserName: &id})
 		})
-		if status == enrichment.Fetched {
+		if enrichment.Fetched == status {
 			mfaDevices = mfa.MFADevices
 		}
 		mfaDevicesStatus = status
@@ -124,7 +124,7 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		out, status := enrichment.Fetch(func() (*iam.ListGroupsForUserOutput, error) {
 			return d.client.ListGroupsForUser(ctx, &iam.ListGroupsForUserInput{UserName: &id})
 		})
-		if status == enrichment.Fetched {
+		if enrichment.Fetched == status {
 			groups = out.Groups
 		}
 		groupsStatus = status
@@ -137,7 +137,7 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		policies, status := enrichment.Fetch(func() (*iam.ListAttachedUserPoliciesOutput, error) {
 			return d.client.ListAttachedUserPolicies(ctx, &iam.ListAttachedUserPoliciesInput{UserName: &id})
 		})
-		if status == enrichment.Fetched {
+		if enrichment.Fetched == status {
 			attachedPolicies = policies.AttachedPolicies
 		}
 		attachedPoliciesStatus = status
@@ -150,7 +150,7 @@ func (d *UserDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 		inline, status := enrichment.Fetch(func() (*iam.ListUserPoliciesOutput, error) {
 			return d.client.ListUserPolicies(ctx, &iam.ListUserPoliciesInput{UserName: &id})
 		})
-		if status == enrichment.Fetched {
+		if enrichment.Fetched == status {
 			inlinePolicies = inline.PolicyNames
 		}
 		inlinePoliciesStatus = status

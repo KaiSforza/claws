@@ -102,7 +102,7 @@ func (d *RoleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	policies, status := enrichment.Fetch(func() (*iam.ListAttachedRolePoliciesOutput, error) {
 		return d.client.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: &id})
 	})
-	if status == enrichment.Fetched {
+	if enrichment.Fetched == status {
 		res.AttachedPolicies = policies.AttachedPolicies
 	}
 	res.AttachedPoliciesStatus = status
@@ -110,7 +110,7 @@ func (d *RoleDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	inline, status := enrichment.Fetch(func() (*iam.ListRolePoliciesOutput, error) {
 		return d.client.ListRolePolicies(ctx, &iam.ListRolePoliciesInput{RoleName: &id})
 	})
-	if status == enrichment.Fetched {
+	if enrichment.Fetched == status {
 		res.InlinePolicies = inline.PolicyNames
 	}
 	res.InlinePoliciesStatus = status

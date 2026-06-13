@@ -94,10 +94,10 @@ func (d *PolicyDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 				VersionId: output.Policy.DefaultVersionId,
 			})
 		})
-		if status == enrichment.Fetched && versionOutput.PolicyVersion != nil && versionOutput.PolicyVersion.Document != nil {
+		if enrichment.Fetched == status && versionOutput.PolicyVersion != nil && versionOutput.PolicyVersion.Document != nil {
 			res.PolicyDocument = *versionOutput.PolicyVersion.Document
 			res.PolicyDocumentStatus = status
-		} else if status != enrichment.Fetched {
+		} else if enrichment.Fetched != status {
 			res.PolicyDocumentStatus = status
 		}
 	}
@@ -106,7 +106,7 @@ func (d *PolicyDAO) Get(ctx context.Context, id string) (dao.Resource, error) {
 	entities, status := enrichment.Fetch(func() (*iam.ListEntitiesForPolicyOutput, error) {
 		return d.client.ListEntitiesForPolicy(ctx, &iam.ListEntitiesForPolicyInput{PolicyArn: &id})
 	})
-	if status == enrichment.Fetched {
+	if enrichment.Fetched == status {
 		res.AttachedUsers = entities.PolicyUsers
 		res.AttachedRoles = entities.PolicyRoles
 		res.AttachedGroups = entities.PolicyGroups
