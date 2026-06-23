@@ -23,7 +23,7 @@ jobs:
       AWS_SHARED_CREDENTIALS_FILE: scripts/demo-aws-config/credentials
       LOCALSTACK_IMAGE: localstack/localstack:4.12.0
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
