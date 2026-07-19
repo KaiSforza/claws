@@ -185,7 +185,7 @@ func parseFlagsFromArgs(args []string) cliOptions {
 					}
 				}
 			}
-		case "-ro", "--read-only":
+		case "-ro", "--ro", "--read-only":
 			opts.readOnly = true
 		case "-e", "--env":
 			opts.envCreds = true
@@ -279,7 +279,7 @@ func printUsage() {
 	fmt.Println("  -e, --env")
 	fmt.Println("        Use environment credentials (ignore ~/.aws config)")
 	fmt.Println("        Useful for instance profiles, ECS task roles, Lambda, etc.")
-	fmt.Println("  -ro, --read-only")
+	fmt.Println("  -ro, --ro, --read-only")
 	fmt.Println("        Run in read-only mode (disable dangerous actions)")
 	fmt.Println("  --autosave")
 	fmt.Println("        Enable saving region/profile/theme to config file")
