@@ -383,7 +383,9 @@ func (v *LogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Route paste and other textinput-bound messages to the active filter.
-	if v.filterActive {
+	// Mouse events skip the filter so the viewport keeps scrolling while
+	// the filter is open.
+	if _, isMouse := msg.(tea.MouseMsg); v.filterActive && !isMouse {
 		return v.updateFilterInput(msg)
 	}
 
